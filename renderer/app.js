@@ -44,8 +44,60 @@
   const serversEmptyState = document.getElementById("servers-empty-state");
   const sortableHeaders = document.querySelectorAll(".sortable-th");
   const serversTabButtons = document.querySelectorAll(".servers-tab-btn");
+  const serversTableWrapper = document.querySelector(".servers-table-wrapper");
+  const serversTabsHint = document.getElementById("servers-tabs-hint");
+
+  const modsPanel = document.getElementById("mods-panel");
+  const cleoDownloadBtn = document.getElementById("cleo-download-btn");
+  const cleoProgressWrapper = document.getElementById("cleo-progress-wrapper");
+  const cleoProgressFill = document.getElementById("cleo-progress-fill");
+  const cleoProgressLabel = document.getElementById("cleo-progress-label");
+
+  const codsmpDownloadBtn = document.getElementById("codsmp-download-btn");
+  const codsmpProgressWrapper = document.getElementById("codsmp-progress-wrapper");
+  const codsmpProgressFill = document.getElementById("codsmp-progress-fill");
+  const codsmpProgressLabel = document.getElementById("codsmp-progress-label");
+
+  const modloaderDownloadBtn = document.getElementById("modloader-download-btn");
+  const modloaderProgressWrapper = document.getElementById("modloader-progress-wrapper");
+  const modloaderProgressFill = document.getElementById("modloader-progress-fill");
+  const modloaderProgressLabel = document.getElementById("modloader-progress-label");
+
+  const serverSidebar = document.getElementById("server-sidebar");
+  const sidebarCloseBtn = document.getElementById("sidebar-close-btn");
+  const sidebarServerName = document.getElementById("sidebar-server-name");
+  const sidebarServerIp = document.getElementById("sidebar-server-ip");
+  const sidebarStatPlayers = document.getElementById("sidebar-stat-players");
+  const sidebarStatPing = document.getElementById("sidebar-stat-ping");
+  const sidebarStatStatus = document.getElementById("sidebar-stat-status");
+  const sidebarGamemode = document.getElementById("sidebar-gamemode");
+  const sidebarMapEl = document.getElementById("sidebar-map");
+  const sidebarLanguageEl = document.getElementById("sidebar-language");
+  const sidebarVersion = document.getElementById("sidebar-version");
+  const sidebarLocked = document.getElementById("sidebar-locked");
+  const sidebarMax = document.getElementById("sidebar-max");
+  const sidebarWeatherEl = document.getElementById("sidebar-weather");
+  const sidebarWorldtimeEl = document.getElementById("sidebar-worldtime");
+  const sidebarLagcompEl = document.getElementById("sidebar-lagcomp");
+  const sidebarInfoGrid = document.getElementById("sidebar-info-grid");
+  const sidebarWebsiteBtn = document.getElementById("sidebar-website-btn");
+  const sidebarPingChart = document.getElementById("sidebar-ping-chart");
+  const sidebarPlayerCount = document.getElementById("sidebar-player-count");
+  const sidebarPlayerList = document.getElementById("sidebar-player-list");
+  const sidebarConnectBtn = document.getElementById("sidebar-connect-btn");
+  const sidebarRemoveBtn = document.getElementById("sidebar-remove-btn");
+
+  const updateModalOverlay = document.getElementById("update-modal-overlay");
+  const updateModalLatestVersion = document.getElementById("update-modal-latest-version");
+  const updateModalCurrentVersion = document.getElementById("update-modal-current-version");
+  const updateModalNotes = document.getElementById("update-modal-notes");
+  const updateModalLaterBtn = document.getElementById("update-modal-later-btn");
+  const updateModalDownloadBtn = document.getElementById("update-modal-download-btn");
 
   const RECOMMENDED_SERVERS = [{ host: "51.254.139.153", port: 7777 }];
+
+  const SIDEBAR_REFRESH_INTERVAL_MS = 3000;
+  const PING_HISTORY_MAX = 40;
 
   let toastTimeout = null;
   let savedServers = [];
@@ -56,6 +108,14 @@
   let currentSortKey = null;
   let currentSortDirection = "asc";
   let currentTab = "favorite";
+
+  let sidebarSelected = null;
+  let sidebarRefreshTimer = null;
+  let pingHistory = [];
+  let rowClickTimer = null;
+  let lastClickedRowKey = null;
+  let pendingUpdateReleaseUrl = "";
+  let sidebarCurrentWebsiteUrl = "";
 
   function serverKey(host, port) {
     return host + ":" + port;
@@ -85,11 +145,38 @@
       online: false,
       name: key,
       gamemode: "-",
+      mapname: "-",
+      language: "-",
       version: "-",
+      weburl: "",
+      weather: "-",
+      worldtime: "-",
+      lagcomp: "-",
+      customRules: previous && previous.customRules ? previous.customRules : {},
       onlineCount: 0,
       maxCount: 0,
       ping: null,
       locked: null
+    };
+  }
+
+  function buildOnlineStatus(key, status) {
+    return {
+      online: true,
+      name: status.serverName || key,
+      gamemode: status.gamemode || "-",
+      mapname: status.mapname || "-",
+      language: status.language || "-",
+      version: status.version || "-",
+      weburl: typeof status.weburl === "string" ? status.weburl : "",
+      weather: status.weather || "-",
+      worldtime: status.worldtime || "-",
+      lagcomp: status.lagcomp || "-",
+      customRules: status.customRules && typeof status.customRules === "object" ? status.customRules : {},
+      onlineCount: typeof status.online === "number" ? status.online : 0,
+      maxCount: typeof status.max === "number" ? status.max : 0,
+      ping: typeof status.ping === "number" ? status.ping : null,
+      locked: typeof status.passworded === "boolean" ? status.passworded : false
     };
   }
 
@@ -101,16 +188,7 @@
       const status = await window.sampLauncher.getServerStatus(host, port);
 
       if (status && status.connected) {
-        statusCache[key] = {
-          online: true,
-          name: status.serverName || key,
-          gamemode: status.gamemode || "-",
-          version: status.version || "-",
-          onlineCount: typeof status.online === "number" ? status.online : 0,
-          maxCount: typeof status.max === "number" ? status.max : 0,
-          ping: typeof status.ping === "number" ? status.ping : null,
-          locked: typeof status.passworded === "boolean" ? status.passworded : false
-        };
+        statusCache[key] = buildOnlineStatus(key, status);
       } else {
         statusCache[key] = buildOfflineStatus(key, previous);
       }
@@ -193,6 +271,7 @@
         currentTab === "recommended"
           ? "Belum ada server rekomendasi."
           : 'Belum ada server ditambahkan.<br />Klik ikon "+" di pojok kanan atas untuk menambahkan server.';
+      updateSidebarRemoveButtonVisibility();
       return;
     }
     serversEmptyState.style.display = "none";
@@ -204,7 +283,14 @@
       const status = statusCache[key] || buildOfflineStatus(key, null);
 
       const tr = document.createElement("tr");
-      tr.className = "server-row" + (status.online ? "" : " server-row--offline");
+      const isSelectedRow =
+        sidebarSelected && sidebarSelected.host === srv.host && sidebarSelected.port === srv.port;
+      tr.className =
+        "server-row" +
+        (status.online ? "" : " server-row--offline") +
+        (isSelectedRow ? " server-row--selected" : "");
+      tr.dataset.host = srv.host;
+      tr.dataset.port = String(srv.port);
 
       const playersText = status.onlineCount + " / " + status.maxCount;
       const pingText = status.ping !== null && status.ping !== undefined ? status.ping + " ms" : "-";
@@ -243,7 +329,28 @@
         if (event.target.closest(".remove-server-btn")) {
           return;
         }
-        openConnectModalFor(srv.host, srv.port, status);
+
+        const rowKey = serverKey(srv.host, srv.port);
+
+        if (rowClickTimer !== null && lastClickedRowKey === rowKey) {
+          clearTimeout(rowClickTimer);
+          rowClickTimer = null;
+          lastClickedRowKey = null;
+          openConnectModalFor(srv.host, srv.port, statusCache[rowKey] || status);
+          return;
+        }
+
+        if (rowClickTimer !== null) {
+          clearTimeout(rowClickTimer);
+          rowClickTimer = null;
+        }
+
+        lastClickedRowKey = rowKey;
+        rowClickTimer = setTimeout(() => {
+          rowClickTimer = null;
+          lastClickedRowKey = null;
+          openServerSidebar(srv.host, srv.port);
+        }, 220);
       });
 
       const removeBtn = tr.querySelector(".remove-server-btn");
@@ -253,6 +360,9 @@
           try {
             await window.sampLauncher.removeServer(srv.host, srv.port);
             showToast("Server dihapus dari daftar", "success");
+            if (sidebarSelected && sidebarSelected.host === srv.host && sidebarSelected.port === srv.port) {
+              closeServerSidebar();
+            }
             await loadServers();
           } catch (err) {
             showToast("Gagal menghapus server: " + err.message, "error");
@@ -262,7 +372,342 @@
 
       serversTableBody.appendChild(tr);
     });
+
+    updateSidebarRemoveButtonVisibility();
   }
+
+  function updateSelectedRowHighlight() {
+    const rows = serversTableBody.querySelectorAll(".server-row");
+    rows.forEach((row) => {
+      const isSelectedRow =
+        sidebarSelected &&
+        row.dataset.host === sidebarSelected.host &&
+        row.dataset.port === String(sidebarSelected.port);
+      row.classList.toggle("server-row--selected", !!isSelectedRow);
+    });
+  }
+
+  function resolveOnlineText(status) {
+    if (!status) return "-";
+    return status.online ? "Online" : "Offline";
+  }
+
+  function normalizeExternalUrl(rawUrl) {
+    if (!rawUrl) return "";
+    const trimmed = String(rawUrl).trim();
+    if (!trimmed || trimmed.toLowerCase() === "none" || trimmed.toLowerCase() === "-") {
+      return "";
+    }
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed;
+    }
+    return "http://" + trimmed;
+  }
+
+  function renderSidebarCustomRules(status) {
+    const customRules = status && status.customRules && typeof status.customRules === "object" ? status.customRules : {};
+
+    sidebarInfoGrid.querySelectorAll(".sidebar-info-row--custom-rule").forEach((row) => row.remove());
+
+    for (const key of Object.keys(customRules)) {
+      const row = document.createElement("div");
+      row.className = "sidebar-info-row sidebar-info-row--custom-rule";
+
+      const label = document.createElement("span");
+      label.className = "info-label";
+      label.textContent = key;
+
+      const value = document.createElement("span");
+      value.className = "info-value";
+      value.textContent = customRules[key];
+
+      row.appendChild(label);
+      row.appendChild(value);
+      sidebarInfoGrid.appendChild(row);
+    }
+  }
+
+  function renderSidebarStaticInfo(host, port, status) {
+    sidebarServerName.textContent = status && status.name ? status.name : host + ":" + port;
+    sidebarServerIp.textContent = host + ":" + port;
+
+    sidebarGamemode.textContent = status && status.gamemode ? status.gamemode : "-";
+    sidebarMapEl.textContent = status && status.mapname ? status.mapname : "-";
+    sidebarLanguageEl.textContent = status && status.language ? status.language : "-";
+    sidebarVersion.textContent = status && status.version ? status.version : "-";
+    sidebarMax.textContent = status ? String(status.maxCount) : "-";
+    sidebarWeatherEl.textContent = status && status.weather ? status.weather : "-";
+    sidebarWorldtimeEl.textContent = status && status.worldtime ? status.worldtime : "-";
+    sidebarLagcompEl.textContent = status && status.lagcomp ? status.lagcomp : "-";
+
+    if (!status) {
+      sidebarLocked.textContent = "-";
+    } else if (status.locked === true) {
+      sidebarLocked.textContent = "Terkunci";
+    } else if (status.locked === false) {
+      sidebarLocked.textContent = "Terbuka";
+    } else {
+      sidebarLocked.textContent = "Tidak diketahui";
+    }
+
+    sidebarCurrentWebsiteUrl = normalizeExternalUrl(status && status.weburl);
+    sidebarWebsiteBtn.classList.toggle("visible", !!sidebarCurrentWebsiteUrl);
+
+    sidebarStatPlayers.textContent = status ? status.onlineCount + " / " + status.maxCount : "-";
+    sidebarStatPing.textContent = status && status.ping !== null && status.ping !== undefined ? status.ping + " ms" : "-";
+    sidebarStatStatus.textContent = resolveOnlineText(status);
+
+    renderSidebarCustomRules(status);
+  }
+
+  sidebarWebsiteBtn.addEventListener("click", async () => {
+    if (!sidebarCurrentWebsiteUrl) return;
+    sidebarWebsiteBtn.disabled = true;
+    try {
+      const result = await window.sampLauncher.openExternalUrl(sidebarCurrentWebsiteUrl);
+      if (!result || !result.success) {
+        showToast(result && result.message ? result.message : "Gagal membuka website server", "error");
+      }
+    } catch (err) {
+      showToast("Gagal membuka website server: " + err.message, "error");
+    } finally {
+      sidebarWebsiteBtn.disabled = false;
+    }
+  });
+
+  function renderSidebarPlayers(playersResult) {
+    if (!playersResult || !playersResult.connected) {
+      sidebarPlayerList.innerHTML = '<div class="sidebar-player-empty">Server sedang offline atau tidak merespon.</div>';
+      sidebarPlayerCount.textContent = "";
+      return;
+    }
+
+    const players = playersResult.players || [];
+    sidebarPlayerCount.textContent = players.length > 0 ? "(" + players.length + ")" : "";
+
+    if (players.length === 0) {
+      sidebarPlayerList.innerHTML = '<div class="sidebar-player-empty">Belum ada player online di server ini.</div>';
+      return;
+    }
+
+    const rowsHtml = players
+      .map((player, index) => {
+        const metaParts = [];
+        if (typeof player.score === "number") {
+          metaParts.push("Score " + player.score);
+        }
+        if (typeof player.ping === "number") {
+          metaParts.push(player.ping + " ms");
+        }
+        const metaHtml =
+          metaParts.length > 0
+            ? '<span class="sidebar-player-meta">' + escapeHtml(metaParts.join(" · ")) + "</span>"
+            : "";
+        return (
+          '<div class="sidebar-player-row">' +
+          '<span class="sidebar-player-index">' + (index + 1) + ".</span>" +
+          '<span class="sidebar-player-name">' + escapeHtml(player.name) + "</span>" +
+          metaHtml +
+          "</div>"
+        );
+      })
+      .join("");
+
+    sidebarPlayerList.innerHTML = rowsHtml;
+  }
+
+  function resizeSidebarCanvasIfNeeded() {
+    if (!sidebarPingChart) return;
+    const displayWidth = sidebarPingChart.clientWidth || 280;
+    const displayHeight = sidebarPingChart.clientHeight || 80;
+    if (sidebarPingChart.width !== displayWidth) sidebarPingChart.width = displayWidth;
+    if (sidebarPingChart.height !== displayHeight) sidebarPingChart.height = displayHeight;
+  }
+
+  function drawSidebarPingChart() {
+    if (!sidebarPingChart) return;
+    const ctx = sidebarPingChart.getContext("2d");
+    const w = sidebarPingChart.width;
+    const h = sidebarPingChart.height;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const values = pingHistory.filter((v) => typeof v === "number");
+    if (values.length === 0) {
+      return;
+    }
+
+    const paddingTop = 8;
+    const paddingBottom = 6;
+    const usableHeight = h - paddingTop - paddingBottom;
+    const maxValue = Math.max.apply(null, values.concat([50]));
+    const stepX = values.length > 1 ? w / (values.length - 1) : 0;
+
+    function pointAt(index, value) {
+      const x = values.length > 1 ? index * stepX : w / 2;
+      const y = paddingTop + usableHeight - (value / maxValue) * usableHeight;
+      return { x, y };
+    }
+
+    ctx.beginPath();
+    values.forEach((value, index) => {
+      const p = pointAt(index, value);
+      if (index === 0) {
+        ctx.moveTo(p.x, p.y);
+      } else {
+        ctx.lineTo(p.x, p.y);
+      }
+    });
+    ctx.lineTo(w, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(255, 122, 24, 0.14)";
+    ctx.fill();
+
+    ctx.beginPath();
+    values.forEach((value, index) => {
+      const p = pointAt(index, value);
+      if (index === 0) {
+        ctx.moveTo(p.x, p.y);
+      } else {
+        ctx.lineTo(p.x, p.y);
+      }
+    });
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#ff7a18";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+
+    const lastPoint = pointAt(values.length - 1, values[values.length - 1]);
+    ctx.beginPath();
+    ctx.arc(lastPoint.x, lastPoint.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = "#ff7a18";
+    ctx.fill();
+  }
+
+  function pushPingToHistory(ping) {
+    if (typeof ping === "number") {
+      pingHistory.push(ping);
+    } else {
+      pingHistory.push(null);
+    }
+    if (pingHistory.length > PING_HISTORY_MAX) {
+      pingHistory.shift();
+    }
+    drawSidebarPingChart();
+  }
+
+  async function refreshSidebarData() {
+    if (!sidebarSelected) return;
+    const { host, port } = sidebarSelected;
+
+    try {
+      const status = await window.sampLauncher.getServerStatus(host, port);
+      const key = serverKey(host, port);
+
+      if (status && status.connected) {
+        statusCache[key] = buildOnlineStatus(key, status);
+      } else {
+        statusCache[key] = buildOfflineStatus(key, statusCache[key]);
+      }
+
+      if (!sidebarSelected || sidebarSelected.host !== host || sidebarSelected.port !== port) {
+        return;
+      }
+
+      const cachedStatus = statusCache[key];
+      renderSidebarStaticInfo(host, port, cachedStatus);
+      pushPingToHistory(cachedStatus.online ? cachedStatus.ping : null);
+
+      const playersResult = await window.sampLauncher.getServerPlayers(host, port);
+      if (!sidebarSelected || sidebarSelected.host !== host || sidebarSelected.port !== port) {
+        return;
+      }
+      renderSidebarPlayers(playersResult);
+    } catch (err) {
+      // biarkan sidebar tetap tampil dengan data terakhir jika terjadi error sementara
+    }
+  }
+
+  function stopSidebarRefresh() {
+    if (sidebarRefreshTimer) {
+      clearInterval(sidebarRefreshTimer);
+      sidebarRefreshTimer = null;
+    }
+  }
+
+  function startSidebarRefresh() {
+    stopSidebarRefresh();
+    sidebarRefreshTimer = setInterval(refreshSidebarData, SIDEBAR_REFRESH_INTERVAL_MS);
+  }
+
+  function openServerSidebar(host, port) {
+    sidebarSelected = { host, port };
+    pingHistory = [];
+
+    const key = serverKey(host, port);
+    const status = statusCache[key] || buildOfflineStatus(key, null);
+
+    renderSidebarStaticInfo(host, port, status);
+    sidebarPlayerList.innerHTML = '<div class="sidebar-player-empty">Memuat daftar player...</div>';
+    sidebarPlayerCount.textContent = "";
+
+    serverSidebar.classList.add("active");
+    updateSelectedRowHighlight();
+    updateSidebarRemoveButtonVisibility();
+
+    setTimeout(() => {
+      resizeSidebarCanvasIfNeeded();
+      drawSidebarPingChart();
+    }, 60);
+
+    refreshSidebarData();
+    startSidebarRefresh();
+  }
+
+  function closeServerSidebar() {
+    sidebarSelected = null;
+    pingHistory = [];
+    stopSidebarRefresh();
+    serverSidebar.classList.remove("active");
+    updateSelectedRowHighlight();
+  }
+
+  function updateSidebarRemoveButtonVisibility() {
+    if (!sidebarSelected) {
+      sidebarRemoveBtn.style.display = "none";
+      return;
+    }
+    const isFavorite = savedServers.some(
+      (item) => item.host === sidebarSelected.host && item.port === sidebarSelected.port
+    );
+    sidebarRemoveBtn.style.display = isFavorite ? "flex" : "none";
+  }
+
+  sidebarCloseBtn.addEventListener("click", closeServerSidebar);
+
+  sidebarConnectBtn.addEventListener("click", () => {
+    if (!sidebarSelected) return;
+    const key = serverKey(sidebarSelected.host, sidebarSelected.port);
+    openConnectModalFor(sidebarSelected.host, sidebarSelected.port, statusCache[key]);
+  });
+
+  sidebarRemoveBtn.addEventListener("click", async () => {
+    if (!sidebarSelected) return;
+    const { host, port } = sidebarSelected;
+
+    sidebarRemoveBtn.disabled = true;
+    try {
+      await window.sampLauncher.removeServer(host, port);
+      showToast("Server dihapus dari daftar", "success");
+      closeServerSidebar();
+      await loadServers();
+    } catch (err) {
+      showToast("Gagal menghapus server: " + err.message, "error");
+    } finally {
+      sidebarRemoveBtn.disabled = false;
+    }
+  });
 
   function showAddServerError(message) {
     addServerErrorMessage.textContent = message;
@@ -680,6 +1125,49 @@
     }
   });
 
+  function openUpdateModal(data) {
+    pendingUpdateReleaseUrl = data && data.releaseUrl ? data.releaseUrl : "";
+    updateModalLatestVersion.textContent = data && data.latestVersion ? data.latestVersion : "-";
+    updateModalCurrentVersion.textContent = data && data.currentVersion ? data.currentVersion : "-";
+    updateModalNotes.textContent = data && data.releaseNotes ? data.releaseNotes : "";
+    updateModalOverlay.classList.add("active");
+  }
+
+  function closeUpdateModal() {
+    updateModalOverlay.classList.remove("active");
+  }
+
+  updateModalLaterBtn.addEventListener("click", closeUpdateModal);
+
+  updateModalDownloadBtn.addEventListener("click", async () => {
+    if (!pendingUpdateReleaseUrl) {
+      closeUpdateModal();
+      return;
+    }
+    updateModalDownloadBtn.disabled = true;
+    try {
+      const result = await window.sampLauncher.openExternalUrl(pendingUpdateReleaseUrl);
+      if (!result || !result.success) {
+        showToast(result && result.message ? result.message : "Gagal membuka link download", "error");
+      }
+    } catch (err) {
+      showToast("Gagal membuka link download: " + err.message, "error");
+    } finally {
+      updateModalDownloadBtn.disabled = false;
+      closeUpdateModal();
+    }
+  });
+
+  updateModalOverlay.addEventListener("click", (event) => {
+    if (event.target === updateModalOverlay) {
+      closeUpdateModal();
+    }
+  });
+
+  if (window.sampLauncher.onUpdateAvailable) {
+    window.sampLauncher.onUpdateAvailable(openUpdateModal);
+  }
+
   discordServerBtn.addEventListener("click", async () => {
     try {
       const result = await window.sampLauncher.openDiscordServer();
@@ -732,6 +1220,9 @@
     if (addServerModalOverlay.classList.contains("active")) {
       closeAddServerModal();
     }
+    if (updateModalOverlay.classList.contains("active")) {
+      closeUpdateModal();
+    }
   });
 
   themeToggleBtn.addEventListener("click", toggleTheme);
@@ -750,6 +1241,228 @@
     });
   }
 
+  let isCleoDownloading = false;
+
+  function setCleoProgress(percent, label) {
+    const clampedPercent = Math.max(0, Math.min(100, typeof percent === "number" ? percent : 0));
+    cleoProgressWrapper.classList.add("active");
+    cleoProgressFill.style.width = clampedPercent + "%";
+    cleoProgressLabel.textContent = label || clampedPercent + "%";
+  }
+
+  function hideCleoProgress() {
+    cleoProgressWrapper.classList.remove("active");
+    cleoProgressFill.style.width = "0%";
+    cleoProgressLabel.textContent = "0%";
+  }
+
+  async function refreshCleoStatus() {
+    if (isCleoDownloading) {
+      return;
+    }
+    try {
+      const result = await window.sampLauncher.checkCleoInstalled();
+
+      if (!result || !result.gtaSaDirectory) {
+        cleoDownloadBtn.disabled = true;
+        cleoDownloadBtn.textContent = "Atur Directory GTA SA Dulu";
+        cleoDownloadBtn.classList.remove("mod-card__btn--installed");
+        return;
+      }
+
+      if (result.installed) {
+        cleoDownloadBtn.disabled = true;
+        cleoDownloadBtn.textContent = "✓ Terinstall";
+        cleoDownloadBtn.classList.add("mod-card__btn--installed");
+      } else {
+        cleoDownloadBtn.disabled = false;
+        cleoDownloadBtn.textContent = "Download";
+        cleoDownloadBtn.classList.remove("mod-card__btn--installed");
+      }
+    } catch (err) {
+      cleoDownloadBtn.disabled = false;
+      cleoDownloadBtn.textContent = "Download";
+      cleoDownloadBtn.classList.remove("mod-card__btn--installed");
+    }
+  }
+
+  async function handleDownloadCleo() {
+    if (isCleoDownloading) {
+      return;
+    }
+
+    isCleoDownloading = true;
+    cleoDownloadBtn.disabled = true;
+    cleoDownloadBtn.textContent = "Menyiapkan...";
+    setCleoProgress(0, "Memulai download...");
+
+    try {
+      const result = await window.sampLauncher.downloadCleo();
+
+      if (result && result.success) {
+        if (result.alreadyInstalled) {
+          showToast("CLEO 4 sudah terinstall di directory GTA SA kamu", "success");
+        } else {
+          showToast("CLEO 4 berhasil didownload dan diinstall", "success");
+        }
+      } else {
+        showToast((result && result.message) || "Gagal mendownload CLEO 4", "error");
+      }
+    } catch (err) {
+      showToast("Terjadi kesalahan: " + err.message, "error");
+    } finally {
+      isCleoDownloading = false;
+      hideCleoProgress();
+      await refreshCleoStatus();
+    }
+  }
+
+  if (window.sampLauncher && typeof window.sampLauncher.onCleoDownloadProgress === "function") {
+    window.sampLauncher.onCleoDownloadProgress((data) => {
+      if (!data) {
+        return;
+      }
+
+      if (data.stage === "downloading") {
+        const percent = typeof data.percent === "number" ? data.percent : 0;
+        const label = data.totalBytes ? percent + "%" : "Mengunduh...";
+        setCleoProgress(percent, label);
+      } else if (data.stage === "extracting") {
+        setCleoProgress(100, "Mengekstrak file...");
+      } else if (data.stage === "done") {
+        setCleoProgress(100, "Selesai!");
+      } else if (data.stage === "error") {
+        setCleoProgress(0, "Gagal");
+      }
+    });
+  }
+
+  if (cleoDownloadBtn) {
+    cleoDownloadBtn.addEventListener("click", handleDownloadCleo);
+  }
+
+  function createModDownloader(modId, btn, progressWrapper, progressFill, progressLabel, labelName) {
+    let isDownloading = false;
+
+    function setProgress(percent, label) {
+      const clampedPercent = Math.max(0, Math.min(100, typeof percent === "number" ? percent : 0));
+      progressWrapper.classList.add("active");
+      progressFill.style.width = clampedPercent + "%";
+      progressLabel.textContent = label || clampedPercent + "%";
+    }
+
+    function hideProgress() {
+      progressWrapper.classList.remove("active");
+      progressFill.style.width = "0%";
+      progressLabel.textContent = "0%";
+    }
+
+    async function refresh() {
+      if (isDownloading) {
+        return;
+      }
+      try {
+        const result = await window.sampLauncher.checkModInstalled(modId);
+
+        if (!result || !result.gtaSaDirectory) {
+          btn.disabled = true;
+          btn.textContent = "Atur Directory GTA SA Dulu";
+          btn.classList.remove("mod-card__btn--installed");
+          return;
+        }
+
+        if (result.installed) {
+          btn.disabled = true;
+          btn.textContent = "✓ Terinstall";
+          btn.classList.add("mod-card__btn--installed");
+        } else {
+          btn.disabled = false;
+          btn.textContent = "Download";
+          btn.classList.remove("mod-card__btn--installed");
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Download";
+        btn.classList.remove("mod-card__btn--installed");
+      }
+    }
+
+    async function handleDownload() {
+      if (isDownloading) {
+        return;
+      }
+
+      isDownloading = true;
+      btn.disabled = true;
+      btn.textContent = "Menyiapkan...";
+      setProgress(0, "Memulai download...");
+
+      try {
+        const result = await window.sampLauncher.downloadMod(modId);
+
+        if (result && result.success) {
+          if (result.alreadyInstalled) {
+            showToast(labelName + " sudah terinstall di directory GTA SA kamu", "success");
+          } else {
+            showToast(labelName + " berhasil didownload dan diinstall", "success");
+          }
+        } else {
+          showToast((result && result.message) || "Gagal mendownload " + labelName, "error");
+        }
+      } catch (err) {
+        showToast("Terjadi kesalahan: " + err.message, "error");
+      } finally {
+        isDownloading = false;
+        hideProgress();
+        await refresh();
+      }
+    }
+
+    if (window.sampLauncher && typeof window.sampLauncher.onModDownloadProgress === "function") {
+      window.sampLauncher.onModDownloadProgress((data) => {
+        if (!data || data.modId !== modId) {
+          return;
+        }
+
+        if (data.stage === "downloading") {
+          const percent = typeof data.percent === "number" ? data.percent : 0;
+          const label = data.totalBytes ? percent + "%" : "Mengunduh...";
+          setProgress(percent, label);
+        } else if (data.stage === "extracting") {
+          setProgress(100, "Mengekstrak file...");
+        } else if (data.stage === "done") {
+          setProgress(100, "Selesai!");
+        } else if (data.stage === "error") {
+          setProgress(0, "Gagal");
+        }
+      });
+    }
+
+    if (btn) {
+      btn.addEventListener("click", handleDownload);
+    }
+
+    return { refresh: refresh };
+  }
+
+  const codsmpDownloader = createModDownloader(
+    "codsmp",
+    codsmpDownloadBtn,
+    codsmpProgressWrapper,
+    codsmpProgressFill,
+    codsmpProgressLabel,
+    "COD SMP"
+  );
+
+  const modloaderDownloader = createModDownloader(
+    "modloader",
+    modloaderDownloadBtn,
+    modloaderProgressWrapper,
+    modloaderProgressFill,
+    modloaderProgressLabel,
+    "ModLoader"
+  );
+
   sortableHeaders.forEach((th) => {
     th.addEventListener("click", () => {
       const key = th.getAttribute("data-sort-key");
@@ -766,6 +1479,23 @@
     });
   });
 
+  function applyTabVisibility() {
+    const isModsTab = currentTab === "mods";
+
+    modsPanel.classList.toggle("active", isModsTab);
+    serversTableWrapper.style.display = isModsTab ? "none" : "";
+    if (serversTabsHint) {
+      serversTabsHint.style.display = isModsTab ? "none" : "";
+    }
+
+    if (isModsTab) {
+      closeServerSidebar();
+      refreshCleoStatus();
+      codsmpDownloader.refresh();
+      modloaderDownloader.refresh();
+    }
+  }
+
   serversTabButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
       const tab = btn.getAttribute("data-tab");
@@ -776,7 +1506,10 @@
       serversTabButtons.forEach((otherBtn) => {
         otherBtn.classList.toggle("active", otherBtn === btn);
       });
-      renderServersTable();
+      applyTabVisibility();
+      if (tab !== "mods") {
+        renderServersTable();
+      }
     });
   });
 

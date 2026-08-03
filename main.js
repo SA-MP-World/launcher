@@ -4,6 +4,26 @@ const fs = require("fs");
 const { spawn, exec } = require("child_process");
 const https = require("https");
 const { Client: DiscordRpcClient } = require("@xhayper/discord-rpc");
+const { createExtractorFromFile } = require("node-unrar-js");
+const AdmZip = require("adm-zip");
+
+const CLEO_DOWNLOAD_URL = "https://raw.githubusercontent.com/derrick0930/mods-saworld/refs/heads/main/cleo.rar";
+const CLEO_FOLDER_NAME = "CLEO";
+const CLEO_ASI_NAME = "cleo.asi";
+const CLEO_DOWNLOAD_MAX_REDIRECTS = 5;
+
+const MOD_ZIP_DEFINITIONS = {
+  codsmp: {
+    url: "https://raw.githubusercontent.com/derrick0930/mods-saworld/refs/heads/main/codsmp.zip",
+    checkFileName: "codsmp.asi",
+    label: "COD SMP"
+  },
+  modloader: {
+    url: "https://raw.githubusercontent.com/derrick0930/mods-saworld/refs/heads/main/modloader.zip",
+    checkFileName: "modloader.asi",
+    label: "ModLoader"
+  }
+};
 
 app.setName("SAMP World");
 
@@ -18,7 +38,7 @@ function getLogPath() {
     if (config.gtaSaDirectory && fs.existsSync(config.gtaSaDirectory)) {
       return path.join(config.gtaSaDirectory, LOG_FILE_NAME);
     }
-  } catch (err) {}
+  } catch (err) { }
   return path.join(app.getPath("userData"), LOG_FILE_NAME);
 }
 
@@ -106,7 +126,7 @@ function sendSampQuery(host, port, opcode, timeoutMs) {
       clearTimeout(timer);
       try {
         socket.close();
-      } catch (err) {}
+      } catch (err) { }
       resolve(result);
     }
 
@@ -168,13 +188,13 @@ async function queryServerInfo(host, port) {
 
     strlen = body.readUInt32LE(offset);
     offset += 4;
-    const mapname = decodeSampString(body.slice(offset, offset + strlen));
+    const language = decodeSampString(body.slice(offset, offset + strlen));
     offset += strlen;
 
     return {
       hostname: hostname,
       gamemode: gamemode,
-      mapname: mapname,
+      language: language,
       passworded: passworded === 1,
       maxplayers: maxplayers,
       online: online,
@@ -221,6 +241,132 @@ async function queryServerRules(host, port) {
   }
 }
 
+const PLAYER_QUERY_TIMEOUT_MS = 3000;
+
+async function queryServerPlayersDetailed(host, port) {
+  const result = await sendSampQuery(host, port, "d", PLAYER_QUERY_TIMEOUT_MS);
+  if (!result) {
+    return null;
+  }
+
+  const body = result.body;
+  if (body.length < 2) {
+    return [];
+  }
+
+  const playerCount = body.readUInt16LE(0);
+  let offset = 2;
+
+  const players = [];
+  for (let i = 0; i < playerCount; i++) {
+    // butuh minimal 1 byte id + 1 byte panjang nama
+    if (offset + 2 > body.length) {
+      break;
+    }
+
+    offset += 1; // player id byte, tidak dipakai di UI
+
+    const nameLen = body.readUInt8(offset);
+    offset += 1;
+
+    // pastikan sisa buffer cukup untuk nama + score (4) + ping (4)
+    if (offset + nameLen + 8 > body.length) {
+      break;
+    }
+
+    const name = decodeSampString(body.slice(offset, offset + nameLen));
+    offset += nameLen;
+
+    const score = body.readInt32LE(offset);
+    offset += 4;
+
+    const ping = body.readInt32LE(offset);
+    offset += 4;
+
+    players.push({ name: name, score: score, ping: ping });
+  }
+
+  return players;
+}
+
+async function queryServerPlayersShort(host, port) {
+  const result = await sendSampQuery(host, port, "c", PLAYER_QUERY_TIMEOUT_MS);
+  if (!result) {
+    return null;
+  }
+
+  const body = result.body;
+  if (body.length < 2) {
+    return [];
+  }
+
+  const playerCount = body.readUInt16LE(0);
+  let offset = 2;
+
+  const players = [];
+  for (let i = 0; i < playerCount; i++) {
+    // butuh minimal 1 byte panjang nama
+    if (offset + 1 > body.length) {
+      break;
+    }
+
+    const nameLen = body.readUInt8(offset);
+    offset += 1;
+
+    // pastikan sisa buffer cukup untuk nama + score (4 byte)
+    if (offset + nameLen + 4 > body.length) {
+      break;
+    }
+
+    const name = decodeSampString(body.slice(offset, offset + nameLen));
+    offset += nameLen;
+
+    const score = body.readInt32LE(offset);
+    offset += 4;
+
+    players.push({ name: name, score: score, ping: null });
+  }
+
+  return players;
+}
+
+async function fetchServerPlayers(host, port) {
+  const [detailed, short] = await Promise.all([
+    queryServerPlayersDetailed(host, port),
+    queryServerPlayersShort(host, port)
+  ]);
+
+  const detailedCount = Array.isArray(detailed) ? detailed.length : -1;
+  const shortCount = Array.isArray(short) ? short.length : -1;
+
+  if (detailedCount < 0 && shortCount < 0) {
+    return { connected: false, players: [] };
+  }
+
+  // pakai hasil yang paling banyak berhasil di-parse; 'd' punya score/ping jadi
+  // diprioritaskan bila jumlahnya sama atau lebih lengkap dibanding 'c'.
+  if (detailedCount >= shortCount) {
+    return { connected: true, players: detailed, detailed: true };
+  }
+
+  return { connected: true, players: short, detailed: false };
+}
+
+const KNOWN_RULE_KEYS = ["mapname", "version", "weburl", "weather", "worldtime", "lagcomp"];
+
+function extractCustomRules(rules) {
+  const customRules = {};
+  if (!rules || typeof rules !== "object") {
+    return customRules;
+  }
+  for (const key of Object.keys(rules)) {
+    if (KNOWN_RULE_KEYS.indexOf(key) === -1) {
+      customRules[key] = rules[key];
+    }
+  }
+  return customRules;
+}
+
 async function fetchServerStatus(host, port) {
   const info = await queryServerInfo(host, port);
 
@@ -234,7 +380,14 @@ async function fetchServerStatus(host, port) {
     connected: true,
     serverName: info.hostname || "",
     gamemode: info.gamemode || "",
+    language: info.language || "",
+    mapname: rules && typeof rules.mapname === "string" ? rules.mapname : "",
     version: rules && typeof rules.version === "string" ? rules.version : "",
+    weburl: rules && typeof rules.weburl === "string" ? rules.weburl : "",
+    weather: rules && typeof rules.weather === "string" ? rules.weather : "",
+    worldtime: rules && typeof rules.worldtime === "string" ? rules.worldtime : "",
+    lagcomp: rules && typeof rules.lagcomp === "string" ? rules.lagcomp : "",
+    customRules: extractCustomRules(rules),
     online: info.online,
     max: info.maxplayers,
     ping: info.ping,
@@ -244,13 +397,13 @@ async function fetchServerStatus(host, port) {
 
 const DISCORD_CLIENT_ID = "1522511223940186253";
 const DISCORD_SERVER_URL = "https://discord.gg/b5wrXeehTm";
-const DISCORD_DOWNLOAD_URL = "https://github.com/derrick0930/SAMP-World/releases";
-const DISCORD_LOGO_URL = "https://raw.githubusercontent.com/derrick0930/SAMP-World/refs/heads/main/assets/logo.png";
+const DISCORD_DOWNLOAD_URL = "https://github.com/SA-MP-World/launcher/releases";
+const DISCORD_LOGO_URL = "https://raw.githubusercontent.com/SA-MP-World/launcher/refs/heads/main/assets/logo.png";
 const DISCORD_LOGO_SMALL = "https://i.imgur.com/NWUGCLE.png";
 const DISCORD_ID_PATTERN = /^\d{15,25}$/;
 
-const UPDATE_CHECK_REPO_OWNER = "derrick0930";
-const UPDATE_CHECK_REPO_NAME = "SAMP-World";
+const UPDATE_CHECK_REPO_OWNER = "SA-MP-World";
+const UPDATE_CHECK_REPO_NAME = "launcher";
 const UPDATE_CHECK_API_URL =
   "https://api.github.com/repos/" + UPDATE_CHECK_REPO_OWNER + "/" + UPDATE_CHECK_REPO_NAME + "/releases/latest";
 const UPDATE_CHECK_RELEASES_PAGE_URL =
@@ -332,24 +485,18 @@ async function checkForUpdatesAndNotify() {
     const releaseUrl = (release.html_url) || UPDATE_CHECK_RELEASES_PAGE_URL;
     const releaseNotes = release.body ? String(release.body).slice(0, 500) : "";
 
-    const result = await dialog.showMessageBox({
-      type: "info",
-      title: "Update Tersedia",
-      message: "Versi baru SA:MP World tersedia: " + latestTag,
-      detail:
-        "Kamu memakai versi " + currentVersion + ", versi terbaru adalah " + latestTag + "." +
-        (releaseNotes ? "\n\nCatatan rilis:\n" + releaseNotes : ""),
-      buttons: ["Download", "Nanti"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true
-    });
+    writeLog("INFO", "Update tersedia: " + latestTag + " (versi terpasang " + currentVersion + ")");
 
-    if (result.response === 0) {
-      shell.openExternal(releaseUrl);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("update-available", {
+        latestVersion: latestTag,
+        currentVersion: currentVersion,
+        releaseUrl: releaseUrl,
+        releaseNotes: releaseNotes
+      });
     }
   } catch (err) {
-  
+
     writeLog("WARN", "Update check gagal: " + err.message);
   }
 }
@@ -372,7 +519,7 @@ function connectDiscordClient(clientId) {
   if (discordClient) {
     try {
       discordClient.destroy();
-    } catch (err) {}
+    } catch (err) { }
   }
 
   discordClient = new DiscordRpcClient({
@@ -564,9 +711,9 @@ function monitorGtaProcessForDiscord() {
         if (elapsedWaitingForStartMs >= GTA_MONITOR_MAX_WAIT_MS) {
           console.log(
             GTA_PROCESS_NAME +
-              " tidak pernah terdeteksi berjalan dalam " +
-              GTA_MONITOR_MAX_WAIT_MS / 1000 +
-              " detik. Berhenti memantau."
+            " tidak pernah terdeteksi berjalan dalam " +
+            GTA_MONITOR_MAX_WAIT_MS / 1000 +
+            " detik. Berhenti memantau."
           );
           clearInterval(pollTimer);
         }
@@ -664,11 +811,236 @@ function ensureSharedFilesInstalled(gtaSaDirectory) {
   }
 }
 
+const CUSTOM_SHARED_ASSETS = ["mouse.png", "sampgui.png"];
+
+function ensureCustomSharedAssetsInstalled(gtaSaDirectory) {
+  const sharedDir = resolveSharedFilesDir();
+  for (const fileName of CUSTOM_SHARED_ASSETS) {
+    const srcPath = path.join(sharedDir, fileName);
+    const destPath = path.join(gtaSaDirectory, fileName);
+
+    if (!fs.existsSync(srcPath)) {
+      return { success: false, message: fileName + " tidak ditemukan di: " + srcPath };
+    }
+
+    try {
+      fs.copyFileSync(srcPath, destPath);
+    } catch (err) {
+      return { success: false, message: "Gagal menyalin " + fileName + ": " + err.message };
+    }
+  }
+  return { success: true };
+}
+
 function resolveClientDllPath() {
   const base = app.isPackaged
     ? path.join(process.resourcesPath, "bin", "client")
     : path.join(__dirname, "bin", "client");
   return path.join(base, "saworld-client.dll");
+}
+
+function resolveAnticheatDir() {
+  const base = app.isPackaged
+    ? path.join(process.resourcesPath, "bin", "AC")
+    : path.join(__dirname, "bin", "AC");
+  return base;
+}
+
+function ensureAnticheatInstalled(gtaSaDirectory) {
+  const anticheatDir = resolveAnticheatDir();
+  const srcPath = path.join(anticheatDir, "FileDetect.asi");
+  const destPath = path.join(gtaSaDirectory, "FileDetect.asi");
+
+  if (!fs.existsSync(srcPath)) {
+    return { success: false, message: "FileDetect.asi tidak ditemukan di: " + srcPath };
+  }
+
+  try {
+    fs.copyFileSync(srcPath, destPath);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+function isCleoInstalled(gtaSaDirectory) {
+  try {
+    const cleoFolderPath = path.join(gtaSaDirectory, CLEO_FOLDER_NAME);
+    const cleoAsiPath = path.join(gtaSaDirectory, CLEO_ASI_NAME);
+    const folderOk = fs.existsSync(cleoFolderPath) && fs.statSync(cleoFolderPath).isDirectory();
+    const asiOk = fs.existsSync(cleoAsiPath) && fs.statSync(cleoAsiPath).isFile();
+    return folderOk && asiOk;
+  } catch (err) {
+    return false;
+  }
+}
+
+function downloadFileWithProgress(url, destPath, onProgress, redirectCount) {
+  return new Promise((resolve, reject) => {
+    const currentRedirectCount = redirectCount || 0;
+
+    if (currentRedirectCount > CLEO_DOWNLOAD_MAX_REDIRECTS) {
+      reject(new Error("Terlalu banyak redirect saat mendownload file"));
+      return;
+    }
+
+    const request = https.get(
+      url,
+      { headers: { "User-Agent": "SAMP-World-Launcher" } },
+      (res) => {
+        if (
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location
+        ) {
+          res.resume();
+          downloadFileWithProgress(res.headers.location, destPath, onProgress, currentRedirectCount + 1)
+            .then(resolve)
+            .catch(reject);
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error("Gagal mendownload file (status " + res.statusCode + ")"));
+          return;
+        }
+
+        const totalBytes = parseInt(res.headers["content-length"], 10) || 0;
+        let downloadedBytes = 0;
+
+        const fileStream = fs.createWriteStream(destPath);
+
+        res.on("data", (chunk) => {
+          downloadedBytes += chunk.length;
+          if (typeof onProgress === "function") {
+            onProgress(downloadedBytes, totalBytes);
+          }
+        });
+
+        res.pipe(fileStream);
+
+        fileStream.on("finish", () => {
+          fileStream.close(() => resolve());
+        });
+
+        fileStream.on("error", (err) => {
+          reject(err);
+        });
+
+        res.on("error", (err) => {
+          reject(err);
+        });
+      }
+    );
+
+    request.on("error", (err) => {
+      reject(err);
+    });
+  });
+}
+
+async function extractRarFile(rarFilePath, targetDirectory) {
+  const extractor = await createExtractorFromFile({
+    filepath: rarFilePath,
+    targetPath: targetDirectory
+  });
+
+  const extracted = extractor.extract();
+  for (const file of extracted.files) {
+    void file;
+  }
+}
+
+function extractZipFile(zipFilePath, targetDirectory) {
+  const zip = new AdmZip(zipFilePath);
+  zip.extractAllTo(targetDirectory, true);
+}
+
+function isModZipInstalled(gtaSaDirectory, modId) {
+  const def = MOD_ZIP_DEFINITIONS[modId];
+  if (!def) {
+    return false;
+  }
+  try {
+    const filePath = path.join(gtaSaDirectory, def.checkFileName);
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+  } catch (err) {
+    return false;
+  }
+}
+
+async function downloadAndInstallModZip(modId) {
+  const def = MOD_ZIP_DEFINITIONS[modId];
+  if (!def) {
+    return { success: false, message: "Mod tidak dikenal: " + modId };
+  }
+
+  const config = readConfig();
+  const gtaSaDirectory = config.gtaSaDirectory;
+
+  if (!gtaSaDirectory || !fs.existsSync(gtaSaDirectory)) {
+    return {
+      success: false,
+      message: "Directory GTA SA belum diatur. Silakan atur lewat menu Setting terlebih dahulu."
+    };
+  }
+
+  if (isModZipInstalled(gtaSaDirectory, modId)) {
+    writeLog("INFO", def.label + " sudah terinstall, download dilewati.");
+    return { success: true, alreadyInstalled: true };
+  }
+
+  function sendProgress(payload) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("mod-download-progress", Object.assign({ modId: modId }, payload));
+    }
+  }
+
+  const tempZipPath = path.join(app.getPath("temp"), "sampworld-" + modId + "-" + Date.now() + ".zip");
+
+  try {
+    sendProgress({ stage: "downloading", percent: 0, downloadedBytes: 0, totalBytes: 0 });
+
+    await downloadFileWithProgress(def.url, tempZipPath, (downloadedBytes, totalBytes) => {
+      const percent = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
+      sendProgress({ stage: "downloading", percent: percent, downloadedBytes: downloadedBytes, totalBytes: totalBytes });
+    });
+
+    writeLog("INFO", def.label + " berhasil didownload ke: " + tempZipPath);
+
+    sendProgress({ stage: "extracting", percent: 100 });
+
+    extractZipFile(tempZipPath, gtaSaDirectory);
+
+    try {
+      fs.unlinkSync(tempZipPath);
+    } catch (err) { }
+
+    if (!isModZipInstalled(gtaSaDirectory, modId)) {
+      const message =
+        "File " + def.label + " sudah diekstrak, tapi " + def.checkFileName + " tidak ditemukan di directory GTA SA. Periksa isi archive-nya.";
+      writeLog("WARN", message);
+      sendProgress({ stage: "error", message: message });
+      return { success: false, message: message };
+    }
+
+    writeLog("INFO", def.label + " berhasil diinstall ke: " + gtaSaDirectory);
+    sendProgress({ stage: "done", percent: 100 });
+
+    return { success: true };
+  } catch (err) {
+    try {
+      if (fs.existsSync(tempZipPath)) {
+        fs.unlinkSync(tempZipPath);
+      }
+    } catch (cleanupErr) { }
+
+    writeLog("ERROR", "Gagal mendownload/install " + def.label + ": " + err.message);
+    sendProgress({ stage: "error", message: err.message });
+
+    return { success: false, message: "Gagal mendownload/install " + def.label + ": " + err.message };
+  }
 }
 
 function setSampPlayerNameRegistry(playerName) {
@@ -697,12 +1069,12 @@ function setSampPlayerNameRegistry(playerName) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 550,
-    minWidth: 900,
-    minHeight: 550,
-    maxWidth: 900,
-    maxHeight: 550,
+    width: 1280,
+    height: 760,
+    minWidth: 1280,
+    minHeight: 760,
+    maxWidth: 1280,
+    maxHeight: 760,
     resizable: false,
     fullscreenable: false,
     maximizable: false,
@@ -855,6 +1227,33 @@ ipcMain.handle("get-server-status", async (event, payload) => {
   return fetchServerStatus(host, port);
 });
 
+ipcMain.handle("get-server-players", async (event, payload) => {
+  const host = payload && payload.host ? String(payload.host).trim() : "";
+  const port = payload && payload.port ? parseInt(payload.port, 10) : NaN;
+
+  if (!host || !Number.isInteger(port)) {
+    return { connected: false, players: [] };
+  }
+
+  return fetchServerPlayers(host, port);
+});
+
+ipcMain.handle("open-external-url", async (event, payload) => {
+  const url = payload && payload.url ? String(payload.url).trim() : "";
+
+  if (!/^https?:\/\//i.test(url)) {
+    return { success: false, message: "URL tidak valid" };
+  }
+
+  try {
+    await shell.openExternal(url);
+    return { success: true };
+  } catch (err) {
+    writeLog("ERROR", "Gagal membuka link eksternal: " + err.message);
+    return { success: false, message: "Gagal membuka link: " + err.message };
+  }
+});
+
 ipcMain.handle("launch-samp", async (event, payload) => {
   const host = payload && payload.host ? String(payload.host).trim() : "";
   const port = payload && payload.port ? parseInt(payload.port, 10) : NaN;
@@ -911,6 +1310,24 @@ ipcMain.handle("launch-samp", async (event, payload) => {
     return {
       success: false,
       message: "Gagal menyiapkan file pendukung SAMP: " + sharedResult.message
+    };
+  }
+
+  const customAssetsResult = ensureCustomSharedAssetsInstalled(gtaSaDirectory);
+  if (!customAssetsResult.success) {
+    writeLog("ERROR", "Gagal menyiapkan mouse.png/sampgui.png: " + customAssetsResult.message);
+    return {
+      success: false,
+      message: "Gagal menyiapkan mouse.png/sampgui.png: " + customAssetsResult.message
+    };
+  }
+
+  const anticheatResult = ensureAnticheatInstalled(gtaSaDirectory);
+  if (!anticheatResult.success) {
+    writeLog("ERROR", "Gagal menyiapkan anticheat FileDetect.asi: " + anticheatResult.message);
+    return {
+      success: false,
+      message: "Gagal menyiapkan anticheat FileDetect.asi: " + anticheatResult.message
     };
   }
 
@@ -1054,6 +1471,110 @@ ipcMain.handle("save-theme", async (event, payload) => {
   const theme = payload && payload.theme === "light" ? "light" : "dark";
   writeConfig({ theme: theme });
   return { success: true, theme: theme };
+});
+
+ipcMain.handle("check-cleo-installed", async () => {
+  const config = readConfig();
+  const gtaSaDirectory = config.gtaSaDirectory;
+
+  if (!gtaSaDirectory || !fs.existsSync(gtaSaDirectory)) {
+    return { installed: false, gtaSaDirectory: "" };
+  }
+
+  return { installed: isCleoInstalled(gtaSaDirectory), gtaSaDirectory: gtaSaDirectory };
+});
+
+ipcMain.handle("download-cleo", async () => {
+  const config = readConfig();
+  const gtaSaDirectory = config.gtaSaDirectory;
+
+  if (!gtaSaDirectory || !fs.existsSync(gtaSaDirectory)) {
+    return {
+      success: false,
+      message: "Directory GTA SA belum diatur. Silakan atur lewat menu Setting terlebih dahulu."
+    };
+  }
+
+  if (isCleoInstalled(gtaSaDirectory)) {
+    writeLog("INFO", "CLEO 4 sudah terinstall, download dilewati.");
+    return { success: true, alreadyInstalled: true };
+  }
+
+  function sendProgress(payload) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("cleo-download-progress", payload);
+    }
+  }
+
+  const tempRarPath = path.join(app.getPath("temp"), "sampworld-cleo-" + Date.now() + ".rar");
+
+  try {
+    sendProgress({ stage: "downloading", percent: 0, downloadedBytes: 0, totalBytes: 0 });
+
+    await downloadFileWithProgress(CLEO_DOWNLOAD_URL, tempRarPath, (downloadedBytes, totalBytes) => {
+      const percent = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
+      sendProgress({ stage: "downloading", percent: percent, downloadedBytes: downloadedBytes, totalBytes: totalBytes });
+    });
+
+    writeLog("INFO", "CLEO 4 berhasil didownload ke: " + tempRarPath);
+
+    sendProgress({ stage: "extracting", percent: 100 });
+
+    await extractRarFile(tempRarPath, gtaSaDirectory);
+
+    try {
+      fs.unlinkSync(tempRarPath);
+    } catch (err) {
+      // gagal hapus file sementara bukan hal fatal
+    }
+
+    if (!isCleoInstalled(gtaSaDirectory)) {
+      const message =
+        "File CLEO 4 sudah diekstrak, tapi folder CLEO/cleo.asi tidak ditemukan di directory GTA SA. Periksa isi archive-nya.";
+      writeLog("WARN", message);
+      sendProgress({ stage: "error", message: message });
+      return { success: false, message: message };
+    }
+
+    writeLog("INFO", "CLEO 4 berhasil diinstall ke: " + gtaSaDirectory);
+    sendProgress({ stage: "done", percent: 100 });
+
+    return { success: true };
+  } catch (err) {
+    try {
+      if (fs.existsSync(tempRarPath)) {
+        fs.unlinkSync(tempRarPath);
+      }
+    } catch (cleanupErr) {
+      // abaikan gagal cleanup
+    }
+
+    writeLog("ERROR", "Gagal mendownload/install CLEO 4: " + err.message);
+    sendProgress({ stage: "error", message: err.message });
+
+    return { success: false, message: "Gagal mendownload/install CLEO 4: " + err.message };
+  }
+});
+
+ipcMain.handle("check-mod-installed", async (event, payload) => {
+  const modId = payload && payload.modId;
+  const config = readConfig();
+  const gtaSaDirectory = config.gtaSaDirectory;
+
+  if (!MOD_ZIP_DEFINITIONS[modId]) {
+    return { installed: false, gtaSaDirectory: "" };
+  }
+
+  if (!gtaSaDirectory || !fs.existsSync(gtaSaDirectory)) {
+    return { installed: false, gtaSaDirectory: "" };
+  }
+
+  return { installed: isModZipInstalled(gtaSaDirectory, modId), gtaSaDirectory: gtaSaDirectory };
+});
+
+ipcMain.handle("download-mod", async (event, payload) => {
+  const modId = payload && payload.modId;
+  return downloadAndInstallModZip(modId);
 });
 
 ipcMain.handle("select-directory", async () => {
