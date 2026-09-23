@@ -37,7 +37,6 @@
   const addServerCancelBtn = document.getElementById("add-server-cancel-btn");
   const addServerConfirmBtn = document.getElementById("add-server-confirm-btn");
   const addServerIpInput = document.getElementById("add-server-ip-input");
-  const addServerPortInput = document.getElementById("add-server-port-input");
   const addServerErrorMessage = document.getElementById("add-server-error-message");
 
   const serversTableBody = document.getElementById("servers-table-body");
@@ -62,6 +61,15 @@
   const modloaderProgressWrapper = document.getElementById("modloader-progress-wrapper");
   const modloaderProgressFill = document.getElementById("modloader-progress-fill");
   const modloaderProgressLabel = document.getElementById("modloader-progress-label");
+
+  const chatlogPanel = document.getElementById("chatlog-panel");
+  const chatlogPathLabel = document.getElementById("chatlog-path-label");
+  const chatlogTextarea = document.getElementById("chatlog-textarea");
+  const chatlogRefreshBtn = document.getElementById("chatlog-refresh-btn");
+  const chatlogCopyBtn = document.getElementById("chatlog-copy-btn");
+  const chatlogFolderBtn = document.getElementById("chatlog-folder-btn");
+  const chatlogSaveBtn = document.getElementById("chatlog-save-btn");
+  const chatlogStatusInfo = document.getElementById("chatlog-status-info");
 
   const serverSidebar = document.getElementById("server-sidebar");
   const sidebarCloseBtn = document.getElementById("sidebar-close-btn");
@@ -721,7 +729,6 @@
 
   function openAddServerModal() {
     addServerIpInput.value = "";
-    addServerPortInput.value = "";
     clearAddServerError();
     addServerModalOverlay.classList.add("active");
     setTimeout(() => addServerIpInput.focus(), 150);
@@ -733,17 +740,29 @@
   }
 
   async function handleAddServer() {
-    const host = addServerIpInput.value.trim();
-    const portRaw = addServerPortInput.value.trim();
-    const port = Number(portRaw);
+    const rawInput = addServerIpInput.value.trim();
 
-    if (!host) {
-      showAddServerError("IP/Host tidak boleh kosong");
+    if (!rawInput) {
+      showAddServerError("IP/Host server tidak boleh kosong");
       return;
     }
 
-    if (!/^\d+$/.test(portRaw) || port <= 0 || port > 65535) {
-      showAddServerError("Port tidak valid");
+    let host = rawInput;
+    let port = 7777;
+
+    const lastColonIndex = rawInput.lastIndexOf(":");
+    if (lastColonIndex !== -1) {
+      host = rawInput.substring(0, lastColonIndex).trim();
+      const portRaw = rawInput.substring(lastColonIndex + 1).trim();
+      port = Number(portRaw);
+      if (!/^\d+$/.test(portRaw) || port <= 0 || port > 65535) {
+        showAddServerError("Port tidak valid (1-65535)");
+        return;
+      }
+    }
+
+    if (!host) {
+      showAddServerError("IP/Host server tidak boleh kosong");
       return;
     }
 
@@ -782,8 +801,11 @@
     usernameInput.value = "";
     try {
       const settings = await window.sampLauncher.getSettings();
-      if (settings && settings.lastUsername) {
-        usernameInput.value = settings.lastUsername;
+      const srvKey = selectedServer ? (selectedServer.host + ":" + selectedServer.port) : "";
+      const serverUsernames = settings && settings.serverUsernames ? settings.serverUsernames : {};
+      const savedName = (srvKey && serverUsernames[srvKey]) ? serverUsernames[srvKey] : (settings && settings.lastUsername ? settings.lastUsername : "");
+      if (savedName) {
+        usernameInput.value = savedName;
       }
       if (settings && settings.lastSampVersion) {
         sampVersionSelect.value = settings.lastSampVersion;
@@ -1112,12 +1134,7 @@
     }
   });
 
-  addServerPortInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      handleAddServer();
-    }
-  });
+
 
   addServerModalOverlay.addEventListener("click", (event) => {
     if (event.target === addServerModalOverlay) {
@@ -1479,20 +1496,123 @@
     });
   });
 
+  function updateChatlogStatusInfo() {
+    if (!chatlogTextarea || !chatlogStatusInfo) return;
+    const len = chatlogTextarea.value.length;
+    const lines = chatlogTextarea.value ? chatlogTextarea.value.split("\n").length : 0;
+    chatlogStatusInfo.textContent = len.toLocaleString("id-ID") + " karakter · " + lines.toLocaleString("id-ID") + " baris";
+  }
+
+  async function loadChatlog(isManualRefresh) {
+    if (!chatlogTextarea) return;
+    chatlogTextarea.placeholder = "Memuat chatlog...";
+    try {
+      const result = await window.sampLauncher.getChatlog();
+      if (result && result.filePath) {
+        chatlogPathLabel.textContent = result.filePath;
+      }
+      if (result && result.success) {
+        chatlogTextarea.value = result.content || "";
+        updateChatlogStatusInfo();
+        setTimeout(() => {
+          chatlogTextarea.scrollTop = chatlogTextarea.scrollHeight;
+        }, 50);
+        if (isManualRefresh) {
+          showToast("Chatlog berhasil diperbarui", "success");
+        }
+      } else {
+        chatlogTextarea.value = result && result.content ? result.content : "";
+        updateChatlogStatusInfo();
+        if (result && result.message) {
+          showToast(result.message, "error");
+        }
+      }
+    } catch (err) {
+      showToast("Gagal memuat chatlog: " + err.message, "error");
+    }
+  }
+
+  async function handleSaveChatlog() {
+    if (!chatlogTextarea) return;
+    chatlogSaveBtn.disabled = true;
+    chatlogSaveBtn.textContent = "Menyimpan...";
+    try {
+      const result = await window.sampLauncher.saveChatlog(chatlogTextarea.value);
+      if (result && result.success) {
+        showToast(result.message || "Chatlog berhasil disimpan", "success");
+        if (result.filePath) {
+          chatlogPathLabel.textContent = result.filePath;
+        }
+      } else {
+        showToast(result && result.message ? result.message : "Gagal menyimpan chatlog", "error");
+      }
+    } catch (err) {
+      showToast("Gagal menyimpan chatlog: " + err.message, "error");
+    } finally {
+      chatlogSaveBtn.disabled = false;
+      chatlogSaveBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+        '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '<polyline points="17 21 17 13 7 13 7 21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '<polyline points="7 3 7 8 15 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '</svg><span>Save</span>';
+    }
+  }
+
+  async function handleCopyChatlog() {
+    if (!chatlogTextarea) return;
+    try {
+      const textToCopy = chatlogTextarea.value;
+      await navigator.clipboard.writeText(textToCopy);
+      showToast("Isi chatlog berhasil disalin ke clipboard", "success");
+    } catch (err) {
+      chatlogTextarea.select();
+      document.execCommand("copy");
+      showToast("Isi chatlog berhasil disalin ke clipboard", "success");
+    }
+  }
+
+  async function handleOpenChatlogFolder() {
+    try {
+      const result = await window.sampLauncher.openChatlogFolder();
+      if (!result || !result.success) {
+        showToast((result && result.message) || "Gagal membuka folder chatlog", "error");
+      }
+    } catch (err) {
+      showToast("Gagal membuka folder chatlog: " + err.message, "error");
+    }
+  }
+
+  if (chatlogRefreshBtn) chatlogRefreshBtn.addEventListener("click", () => loadChatlog(true));
+  if (chatlogSaveBtn) chatlogSaveBtn.addEventListener("click", handleSaveChatlog);
+  if (chatlogCopyBtn) chatlogCopyBtn.addEventListener("click", handleCopyChatlog);
+  if (chatlogFolderBtn) chatlogFolderBtn.addEventListener("click", handleOpenChatlogFolder);
+  if (chatlogTextarea) chatlogTextarea.addEventListener("input", updateChatlogStatusInfo);
+
   function applyTabVisibility() {
     const isModsTab = currentTab === "mods";
+    const isChatlogTab = currentTab === "chatlog";
+    const isServerTab = !isModsTab && !isChatlogTab;
 
     modsPanel.classList.toggle("active", isModsTab);
-    serversTableWrapper.style.display = isModsTab ? "none" : "";
+    if (chatlogPanel) {
+      chatlogPanel.classList.toggle("active", isChatlogTab);
+    }
+    serversTableWrapper.style.display = isServerTab ? "" : "none";
     if (serversTabsHint) {
-      serversTabsHint.style.display = isModsTab ? "none" : "";
+      serversTabsHint.style.display = isServerTab ? "" : "none";
+    }
+
+    if (isModsTab || isChatlogTab) {
+      closeServerSidebar();
     }
 
     if (isModsTab) {
-      closeServerSidebar();
       refreshCleoStatus();
       codsmpDownloader.refresh();
       modloaderDownloader.refresh();
+    } else if (isChatlogTab) {
+      loadChatlog(false);
     }
   }
 
@@ -1507,7 +1627,7 @@
         otherBtn.classList.toggle("active", otherBtn === btn);
       });
       applyTabVisibility();
-      if (tab !== "mods") {
+      if (currentTab !== "mods" && currentTab !== "chatlog") {
         renderServersTable();
       }
     });

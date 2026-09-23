@@ -33,5 +33,8 @@ contextBridge.exposeInMainWorld("sampLauncher", {
   checkModInstalled: (modId) => ipcRenderer.invoke("check-mod-installed", { modId }),
   downloadMod: (modId) => ipcRenderer.invoke("download-mod", { modId }),
   onModDownloadProgress: (callback) =>
-    ipcRenderer.on("mod-download-progress", (event, data) => callback(data))
+    ipcRenderer.on("mod-download-progress", (event, data) => callback(data)),
+  getChatlog: () => ipcRenderer.invoke("get-chatlog"),
+  saveChatlog: (content) => ipcRenderer.invoke("save-chatlog", { content }),
+  openChatlogFolder: () => ipcRenderer.invoke("open-chatlog-folder")
 });

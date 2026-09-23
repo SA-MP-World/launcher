@@ -3,6 +3,8 @@ const path = require("path");
 const fs = require("fs");
 const { spawn, exec } = require("child_process");
 const https = require("https");
+const http = require("http");
+const crypto = require("crypto");
 const { Client: DiscordRpcClient } = require("@xhayper/discord-rpc");
 const { createExtractorFromFile } = require("node-unrar-js");
 const AdmZip = require("adm-zip");
@@ -504,6 +506,7 @@ async function checkForUpdatesAndNotify() {
 
 
 const DISCORD_ACTIVITY_REFRESH_MS = 5000;
+const DISCORD_JOIN_GRACE_PERIOD_MS = 45000;
 
 let discordClient = null;
 let discordReady = false;
@@ -512,8 +515,10 @@ let discordLastError = "";
 let activityStartTimestamp = null;
 let discordRetryTimer = null;
 
-let activeSession = null; // { host, port }
+let activeSession = null; // { host, port, playerName }
 let activityRefreshTimer = null;
+let hasSeenPlayerOnline = false;
+let sessionJoinedAt = null;
 
 function connectDiscordClient(clientId) {
   if (discordClient) {
@@ -632,11 +637,41 @@ function startDiscordActivityAutoRefresh() {
     }
 
     const status = await fetchServerStatus(activeSession.host, activeSession.port);
-    if (!status) {
+    if (status) {
+      setDiscordPlayingActivity(activeSession.host, activeSession.port, status.serverName, status.online, status.max);
+    }
+
+    if (!activeSession.playerName) {
       return;
     }
 
-    setDiscordPlayingActivity(activeSession.host, activeSession.port, status.serverName, status.online, status.max);
+    const playersResult = await fetchServerPlayers(activeSession.host, activeSession.port);
+    if (!playersResult || !playersResult.connected) {
+      return;
+    }
+
+    const normalizedPlayerName = activeSession.playerName.toLowerCase();
+    const isPlayerListed =
+      Array.isArray(playersResult.players) &&
+      playersResult.players.some(
+        (player) => typeof player.name === "string" && player.name.toLowerCase() === normalizedPlayerName
+      );
+
+    if (isPlayerListed) {
+      hasSeenPlayerOnline = true;
+      return;
+    }
+
+    if (hasSeenPlayerOnline) {
+      writeLog("INFO", activeSession.playerName + " sudah tidak terdaftar di server, menghapus Discord Rich Presence.");
+      clearDiscordActivity();
+      return;
+    }
+
+    if (sessionJoinedAt && Date.now() - sessionJoinedAt >= DISCORD_JOIN_GRACE_PERIOD_MS) {
+      writeLog("INFO", activeSession.playerName + " tidak pernah terdeteksi masuk ke server, menghapus Discord Rich Presence.");
+      clearDiscordActivity();
+    }
   }, DISCORD_ACTIVITY_REFRESH_MS);
 }
 
@@ -650,6 +685,8 @@ function stopDiscordActivityAutoRefresh() {
 function clearDiscordActivity() {
   activityStartTimestamp = null;
   activeSession = null;
+  hasSeenPlayerOnline = false;
+  sessionJoinedAt = null;
   stopDiscordActivityAutoRefresh();
 
   if (!discordReady || !discordClient || !discordClient.user) {
@@ -664,7 +701,6 @@ function clearDiscordActivity() {
 const GTA_PROCESS_NAME = "gta_sa.exe";
 const GTA_MONITOR_GRACE_PERIOD_MS = 20000;
 const GTA_MONITOR_POLL_INTERVAL_MS = 8000;
-const GTA_MONITOR_MAX_WAIT_MS = 120000;
 
 function isGtaProcessRunning(callback) {
   if (process.platform !== "win32") {
@@ -688,9 +724,13 @@ function monitorGtaProcessForDiscord() {
 
   setTimeout(() => {
     let hasSeenGtaProcess = false;
-    let elapsedWaitingForStartMs = 0;
 
     const pollTimer = setInterval(() => {
+      if (!activeSession) {
+        clearInterval(pollTimer);
+        return;
+      }
+
       isGtaProcessRunning((isRunning) => {
         if (isRunning) {
           if (!hasSeenGtaProcess) {
@@ -704,18 +744,6 @@ function monitorGtaProcessForDiscord() {
           console.log(GTA_PROCESS_NAME + " sudah tidak berjalan, menghapus Discord Rich Presence.");
           clearInterval(pollTimer);
           clearDiscordActivity();
-          return;
-        }
-
-        elapsedWaitingForStartMs += GTA_MONITOR_POLL_INTERVAL_MS;
-        if (elapsedWaitingForStartMs >= GTA_MONITOR_MAX_WAIT_MS) {
-          console.log(
-            GTA_PROCESS_NAME +
-            " tidak pernah terdeteksi berjalan dalam " +
-            GTA_MONITOR_MAX_WAIT_MS / 1000 +
-            " detik. Berhenti memantau."
-          );
-          clearInterval(pollTimer);
         }
       });
     }, GTA_MONITOR_POLL_INTERVAL_MS);
@@ -723,6 +751,11 @@ function monitorGtaProcessForDiscord() {
 }
 
 const CONFIG_PATH = path.join(app.getPath("userData"), "config.json");
+
+const SESSION_START_URL = "https://samp.derrick.web.id/api/session-start";
+const SESSION_HEARTBEAT_URL = "https://samp.derrick.web.id/api/session-heartbeat";
+const SESSION_STOP_URL = "https://samp.derrick.web.id/api/session-stop";
+const SESSION_HEARTBEAT_INTERVAL_MS = 30000;
 
 function readConfig() {
   try {
@@ -732,19 +765,130 @@ function readConfig() {
       return {
         gtaSaDirectory: typeof parsed.gtaSaDirectory === "string" ? parsed.gtaSaDirectory : "",
         lastUsername: typeof parsed.lastUsername === "string" ? parsed.lastUsername : "",
-        theme: parsed.theme === "light" ? "light" : "dark"
+        serverUsernames: parsed.serverUsernames && typeof parsed.serverUsernames === "object" ? parsed.serverUsernames : {},
+        theme: parsed.theme === "light" ? "light" : "dark",
+        deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : ""
       };
     }
   } catch (err) {
     console.error("Gagal membaca config.json:", err.message);
   }
-  return { gtaSaDirectory: "", lastUsername: "", theme: "dark" };
+  return { gtaSaDirectory: "", lastUsername: "", serverUsernames: {}, theme: "dark", deviceId: "" };
+}
+
+function getOrCreateDeviceId() {
+  const config = readConfig();
+  if (config.deviceId && typeof config.deviceId === "string" && config.deviceId.trim()) {
+    return config.deviceId.trim();
+  }
+  const newDeviceId = crypto.randomBytes(3).toString("hex").toUpperCase();
+  writeConfig({ deviceId: newDeviceId });
+  return newDeviceId;
+}
+
+function sendSessionPostRequest(urlStr, deviceId) {
+  return new Promise((resolve) => {
+    try {
+      const url = new URL(urlStr);
+      const postData = JSON.stringify({ device_id: deviceId });
+      const isHttps = url.protocol === "https:";
+      const transport = isHttps ? https : http;
+
+      const options = {
+        hostname: url.hostname,
+        port: url.port ? parseInt(url.port, 10) : (isHttps ? 443 : 80),
+        path: url.pathname + url.search,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(postData)
+        },
+        timeout: 10000
+      };
+
+      const req = transport.request(options, (res) => {
+        let body = "";
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve({ success: true, status: res.statusCode, body: body });
+          } else {
+            resolve({ success: false, status: res.statusCode, body: body });
+          }
+        });
+      });
+
+      req.on("error", (err) => {
+        resolve({ success: false, error: err.message });
+      });
+
+      req.on("timeout", () => {
+        req.destroy();
+        resolve({ success: false, error: "Timeout" });
+      });
+
+      req.write(postData);
+      req.end();
+    } catch (err) {
+      resolve({ success: false, error: err.message });
+    }
+  });
+}
+
+let sessionHeartbeatTimer = null;
+
+async function sendSessionStart() {
+  const deviceId = getOrCreateDeviceId();
+  writeLog("INFO", "Mengirimkan session-start untuk device_id: " + deviceId);
+  const result = await sendSessionPostRequest(SESSION_START_URL, deviceId);
+  if (result.success) {
+    writeLog("INFO", "Session-start berhasil dicatat untuk device_id: " + deviceId);
+  } else {
+    writeLog("WARN", "Session-start gagal: " + (result.error || ("HTTP " + result.status)));
+  }
+}
+
+async function sendSessionHeartbeat() {
+  const deviceId = getOrCreateDeviceId();
+  const result = await sendSessionPostRequest(SESSION_HEARTBEAT_URL, deviceId);
+  if (!result.success) {
+    writeLog("WARN", "Session-heartbeat gagal: " + (result.error || ("HTTP " + result.status)));
+  }
+}
+
+async function sendSessionStop() {
+  const deviceId = getOrCreateDeviceId();
+  writeLog("INFO", "Mengirimkan session-stop untuk device_id: " + deviceId);
+  await sendSessionPostRequest(SESSION_STOP_URL, deviceId);
+}
+
+function initSessionTracker() {
+  sendSessionStart();
+
+  if (sessionHeartbeatTimer) {
+    clearInterval(sessionHeartbeatTimer);
+  }
+
+  sessionHeartbeatTimer = setInterval(() => {
+    sendSessionHeartbeat();
+  }, SESSION_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopSessionTracker() {
+  if (sessionHeartbeatTimer) {
+    clearInterval(sessionHeartbeatTimer);
+    sessionHeartbeatTimer = null;
+  }
+  sendSessionStop();
 }
 
 function writeConfig(partialConfig) {
   try {
     const currentConfig = readConfig();
     const mergedConfig = Object.assign({}, currentConfig, partialConfig);
+    if (partialConfig && partialConfig.serverUsernames) {
+      mergedConfig.serverUsernames = Object.assign({}, currentConfig.serverUsernames, partialConfig.serverUsernames);
+    }
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(mergedConfig, null, 2), "utf8");
     return true;
@@ -1071,6 +1215,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 760,
+    useContentSize: true,
     minWidth: 1280,
     minHeight: 760,
     maxWidth: 1280,
@@ -1136,6 +1281,7 @@ app.whenReady().then(() => {
   applyPendingGtaSaPathFromInstaller();
   createWindow();
   initDiscordRpc();
+  initSessionTracker();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1152,6 +1298,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  stopSessionTracker();
   if (discordClient) {
     try {
       discordClient.destroy();
@@ -1281,6 +1428,13 @@ ipcMain.handle("launch-samp", async (event, payload) => {
     };
   }
 
+  const serverKey = host + ":" + port;
+  writeConfig({
+    lastUsername: playerName,
+    lastSampVersion: sampVersion,
+    serverUsernames: { [serverKey]: playerName }
+  });
+
   const config = readConfig();
   const gtaSaDirectory = config.gtaSaDirectory;
 
@@ -1359,8 +1513,6 @@ ipcMain.handle("launch-samp", async (event, payload) => {
     );
   }
 
-  writeConfig({ lastUsername: playerName, lastSampVersion: sampVersion });
-
   try {
     const clientDllPath = resolveClientDllPath();
     const clientDllAvailable = fs.existsSync(clientDllPath);
@@ -1394,7 +1546,9 @@ ipcMain.handle("launch-samp", async (event, payload) => {
       "samp_launcher.exe dijalankan (PID " + child.pid + ") versi " + sampVersion + " untuk connect ke " + host + ":" + port + " sebagai " + playerName + "."
     );
 
-    activeSession = { host: host, port: port };
+    activeSession = { host: host, port: port, playerName: playerName };
+    hasSeenPlayerOnline = false;
+    sessionJoinedAt = Date.now();
     setDiscordPlayingActivity(host, port, serverName, onlinePlayers, maxPlayers);
     startDiscordActivityAutoRefresh();
     monitorGtaProcessForDiscord();
@@ -1588,4 +1742,68 @@ ipcMain.handle("select-directory", async () => {
   }
 
   return { canceled: false, directory: result.filePaths[0] };
+});
+
+function getChatlogPath() {
+  const documentsPath = app.getPath("documents");
+  return path.join(documentsPath, "GTA San Andreas User Files", "SAMP", "chatlog.txt");
+}
+
+ipcMain.handle("get-chatlog", async () => {
+  const filePath = getChatlogPath();
+  try {
+    if (!fs.existsSync(filePath)) {
+      return {
+        success: false,
+        exists: false,
+        filePath: filePath,
+        content: "",
+        message: "File chatlog.txt belum ditemukan. Jalankan SA-MP terlebih dahulu."
+      };
+    }
+    const content = fs.readFileSync(filePath, "utf8");
+    return { success: true, exists: true, filePath: filePath, content: content };
+  } catch (err) {
+    writeLog("ERROR", "Gagal membaca chatlog: " + err.message);
+    return {
+      success: false,
+      exists: false,
+      filePath: filePath,
+      content: "",
+      message: "Gagal membaca chatlog: " + err.message
+    };
+  }
+});
+
+ipcMain.handle("save-chatlog", async (event, payload) => {
+  const filePath = getChatlogPath();
+  const content = payload && typeof payload.content === "string" ? payload.content : "";
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, "utf8");
+    writeLog("INFO", "Chatlog berhasil disimpan ke: " + filePath);
+    return { success: true, filePath: filePath, message: "Chatlog berhasil disimpan" };
+  } catch (err) {
+    writeLog("ERROR", "Gagal menyimpan chatlog: " + err.message);
+    return { success: false, message: "Gagal menyimpan chatlog: " + err.message };
+  }
+});
+
+ipcMain.handle("open-chatlog-folder", async () => {
+  const filePath = getChatlogPath();
+  const dirPath = path.dirname(filePath);
+  try {
+    if (fs.existsSync(filePath)) {
+      shell.showItemInFolder(filePath);
+    } else {
+      if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
+      }
+      await shell.openPath(dirPath);
+    }
+    return { success: true };
+  } catch (err) {
+    writeLog("ERROR", "Gagal membuka folder chatlog: " + err.message);
+    return { success: false, message: "Gagal membuka folder: " + err.message };
+  }
 });
