@@ -3,6 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline';" />
   <title>SA:MP World</title>
@@ -407,6 +408,46 @@
       <div class="modal-actions">
         <button id="settings-cancel-btn" class="btn btn-cancel">Cancel</button>
         <button id="settings-save-btn" class="btn btn-connect">Save</button>
+      </div>
+
+      <div class="repair-section">
+        <div class="repair-section__header">
+          <div>
+            <h3 class="repair-section__title">Komponen Launcher</h3>
+            <p class="repair-section__subtitle">Pulihkan file yang hilang atau corrupt</p>
+          </div>
+          <button id="repair-btn" class="btn-repair" type="button">Cek &amp; Repair</button>
+        </div>
+        <div id="repair-file-list" class="repair-file-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="repair-modal-overlay" class="modal-overlay">
+    <div class="modal-box repair-modal-box">
+      <div class="repair-modal-icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </div>
+      <h2 class="modal-title">Komponen Diperlukan</h2>
+      <p class="modal-subtitle">Komponen launcher berikut hilang dan harus diunduh sebelum bermain:</p>
+
+      <div id="repair-modal-file-list" class="repair-file-list"></div>
+
+      <div id="repair-modal-progress-wrap" class="repair-modal-progress-wrap" style="display: none;">
+        <div class="repair-modal-progress-info">
+          <span id="repair-modal-status-text">Mengunduh...</span>
+          <span id="repair-modal-percent-text">0%</span>
+        </div>
+        <div class="repair-modal-progress-bar">
+          <div id="repair-modal-progress-fill" class="repair-modal-progress-fill"></div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="repair-modal-cancel-btn" class="btn btn-cancel" type="button">Batal</button>
+        <button id="repair-modal-confirm-btn" class="btn btn-connect" type="button">Install &amp; Repair</button>
       </div>
     </div>
   </div>

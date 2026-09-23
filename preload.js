@@ -36,5 +36,9 @@ contextBridge.exposeInMainWorld("sampLauncher", {
     ipcRenderer.on("mod-download-progress", (event, data) => callback(data)),
   getChatlog: () => ipcRenderer.invoke("get-chatlog"),
   saveChatlog: (content) => ipcRenderer.invoke("save-chatlog", { content }),
-  openChatlogFolder: () => ipcRenderer.invoke("open-chatlog-folder")
+  openChatlogFolder: () => ipcRenderer.invoke("open-chatlog-folder"),
+  checkRepair: () => ipcRenderer.invoke("check-repair"),
+  repairLauncher: () => ipcRenderer.invoke("repair-launcher"),
+  onRepairProgress: (callback) =>
+    ipcRenderer.on("repair-progress", (event, data) => callback(data))
 });

@@ -1063,6 +1063,73 @@ select.username-input {
   display: none;
 }
 
+.repair-modal-box {
+  width: 420px;
+  text-align: center;
+}
+
+.repair-modal-icon {
+  width: 50px;
+  height: 50px;
+  margin: 0 auto 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background-color: rgba(255, 122, 24, 0.15);
+  color: #ff7a18;
+}
+
+.repair-modal-box .repair-file-list {
+  margin: 14px 0 16px;
+  text-align: left;
+}
+
+.repair-modal-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.repair-modal-progress-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: #a0a6b5;
+}
+
+.repair-modal-progress-bar {
+  width: 100%;
+  height: 6px;
+  background-color: #1a1d24;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #282d38;
+}
+
+.repair-modal-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #ff7a18, #ff4d1c);
+  border-radius: 6px;
+  transition: width 0.2s ease;
+}
+
+body.theme-light .repair-modal-icon {
+  background-color: rgba(255, 122, 24, 0.12);
+}
+
+body.theme-light .repair-modal-progress-bar {
+  background-color: #e6e8ee;
+  border-color: #d2d6df;
+}
+
+body.theme-light .repair-modal-progress-info {
+  color: #636b7c;
+}
+
 /* Toast */
 .toast {
   position: fixed;
@@ -1507,3 +1574,173 @@ body.theme-light .chatlog-textarea:focus {
 body.theme-light .chatlog-status-info {
   color: #8b90a0;
 }
+
+/* ===== Repair Section (inside Settings Modal) ===== */
+.repair-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #23262e;
+}
+
+.repair-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.repair-section__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e6e8ec;
+  margin-bottom: 2px;
+}
+
+.repair-section__subtitle {
+  font-size: 11.5px;
+  color: #7c8290;
+}
+
+.btn-repair {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid #2a2e37;
+  background-color: #23262e;
+  color: #cfd2d8;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.16s ease, color 0.16s ease;
+}
+
+.btn-repair:hover {
+  background-color: #2b2f39;
+  border-color: #ff7a18;
+  color: #ff7a18;
+  transform: translateY(-1px);
+}
+
+.btn-repair:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.btn-repair:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-repair--warning {
+  border-color: #e8973a;
+  color: #e8973a;
+}
+
+.repair-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.repair-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background-color: #111318;
+  border: 1px solid #1e2229;
+  min-height: 38px;
+}
+
+.repair-file-row__icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.repair-file-row__icon--ok { color: #3ddc84; }
+.repair-file-row__icon--missing { color: #ff6b6b; }
+.repair-file-row__icon--loading { color: #ff7a18; }
+
+.repair-file-row__name {
+  flex: 1;
+  font-size: 12.5px;
+  color: #cfd2d8;
+  font-family: "Consolas", "Cascadia Code", monospace;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.repair-file-row__status {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #7c8290;
+  text-align: right;
+}
+
+.repair-file-row__status--ok { color: #3ddc84; }
+.repair-file-row__status--missing { color: #ff6b6b; }
+.repair-file-row__status--done { color: #3ddc84; }
+.repair-file-row__status--error { color: #ff6b6b; }
+
+.repair-file-progress {
+  flex: 0 0 90px;
+  height: 4px;
+  background-color: #1e2229;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.repair-file-progress__fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #ff7a18, #ff4d1c);
+  transition: width 0.2s ease;
+  width: 0%;
+}
+
+/* Light theme for repair section */
+body.theme-light .repair-section {
+  border-top-color: #e2e4ea;
+}
+
+body.theme-light .repair-section__title {
+  color: #14161b;
+}
+
+body.theme-light .repair-section__subtitle {
+  color: #8b90a0;
+}
+
+body.theme-light .btn-repair {
+  background-color: #eceef2;
+  border-color: #d8dbe2;
+  color: #33363d;
+}
+
+body.theme-light .btn-repair:hover {
+  background-color: #e2e4ea;
+  border-color: #ff7a18;
+  color: #ff7a18;
+}
+
+body.theme-light .repair-file-row {
+  background-color: #f2f3f6;
+  border-color: #e2e4ea;
+}
+
+body.theme-light .repair-file-row__name {
+  color: #23262e;
+}
+
+body.theme-light .repair-file-progress {
+  background-color: #dfe2e8;
+}

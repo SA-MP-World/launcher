@@ -28,6 +28,16 @@
   const browseBtn = document.getElementById("browse-btn");
   const directoryInput = document.getElementById("directory-input");
   const settingsErrorMessage = document.getElementById("settings-error-message");
+  const repairBtn = document.getElementById("repair-btn");
+  const repairFileList = document.getElementById("repair-file-list");
+  const repairModalOverlay = document.getElementById("repair-modal-overlay");
+  const repairModalFileList = document.getElementById("repair-modal-file-list");
+  const repairModalProgressWrap = document.getElementById("repair-modal-progress-wrap");
+  const repairModalProgressFill = document.getElementById("repair-modal-progress-fill");
+  const repairModalStatusText = document.getElementById("repair-modal-status-text");
+  const repairModalPercentText = document.getElementById("repair-modal-percent-text");
+  const repairModalCancelBtn = document.getElementById("repair-modal-cancel-btn");
+  const repairModalConfirmBtn = document.getElementById("repair-modal-confirm-btn");
   const discordServerBtn = document.getElementById("discord-server-btn");
   const themeToggleBtn = document.getElementById("theme-toggle-btn");
   const themeToggleIcon = document.getElementById("theme-toggle-icon");
@@ -633,7 +643,6 @@
       }
       renderSidebarPlayers(playersResult);
     } catch (err) {
-      // biarkan sidebar tetap tampil dengan data terakhir jika terjadi error sementara
     }
   }
 
@@ -811,7 +820,6 @@
         sampVersionSelect.value = settings.lastSampVersion;
       }
     } catch (err) {
-      // gagal load username/versi terakhir bukan hal fatal
     }
 
     setTimeout(() => {
@@ -847,9 +855,245 @@
     settingsErrorMessage.classList.remove("show");
   }
 
+  const REPAIR_ICON_OK =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const REPAIR_ICON_MISSING =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const REPAIR_ICON_LOADING =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+
+  let repairFileStates = {};
+
+  function renderRepairFileList(items) {
+    if (!repairFileList) return;
+    repairFileList.innerHTML = "";
+    items.forEach(function (item) {
+      const state = repairFileStates[item.id] || {};
+      const isMissing = item.missing;
+      const stage = state.stage;
+
+      let iconHtml = isMissing ? REPAIR_ICON_MISSING : REPAIR_ICON_OK;
+      let iconClass = isMissing ? "repair-file-row__icon--missing" : "repair-file-row__icon--ok";
+      let statusText = isMissing ? "Tidak ditemukan" : "OK";
+      let statusClass = isMissing ? "repair-file-row__status--missing" : "repair-file-row__status--ok";
+      let progressHtml = "";
+
+      if (stage === "downloading") {
+        iconHtml = REPAIR_ICON_LOADING;
+        iconClass = "repair-file-row__icon--loading";
+        statusText = (state.percent || 0) + "%";
+        statusClass = "";
+        progressHtml =
+          '<div class="repair-file-progress"><div class="repair-file-progress__fill" style="width:' +
+          (state.percent || 0) + '%"></div></div>';
+      } else if (stage === "done") {
+        iconHtml = REPAIR_ICON_OK;
+        iconClass = "repair-file-row__icon--ok";
+        statusText = "Dipulihkan";
+        statusClass = "repair-file-row__status--done";
+      } else if (stage === "error") {
+        iconHtml = REPAIR_ICON_MISSING;
+        iconClass = "repair-file-row__icon--missing";
+        statusText = "Gagal";
+        statusClass = "repair-file-row__status--error";
+      }
+
+      const row = document.createElement("div");
+      row.className = "repair-file-row";
+      row.dataset.fileId = item.id;
+      row.innerHTML =
+        '<span class="repair-file-row__icon ' + iconClass + '">' + iconHtml + '</span>' +
+        '<span class="repair-file-row__name">' + escapeHtml(item.label) + '</span>' +
+        progressHtml +
+        '<span class="repair-file-row__status ' + statusClass + '">' + statusText + '</span>';
+      repairFileList.appendChild(row);
+    });
+  }
+
+  async function checkRepairStatus(silent) {
+    if (!window.sampLauncher || !window.sampLauncher.checkRepair) return;
+    try {
+      const items = await window.sampLauncher.checkRepair();
+      repairFileStates = {};
+      renderRepairFileList(items);
+      const hasMissing = items.some(function (i) { return i.missing; });
+      if (repairBtn) {
+        repairBtn.classList.toggle("btn-repair--warning", hasMissing);
+        repairBtn.textContent = "Cek & Repair";
+        repairBtn.disabled = false;
+      }
+    } catch (err) {
+      if (!silent) showToast("Gagal memeriksa komponen: " + err.message, "error");
+    }
+  }
+
+  async function handleRepair() {
+    if (!window.sampLauncher || !window.sampLauncher.repairLauncher) return;
+    if (repairBtn) {
+      repairBtn.disabled = true;
+      repairBtn.textContent = "Memperbaiki...";
+    }
+    try {
+      const result = await window.sampLauncher.repairLauncher();
+      if (result && result.success) {
+        if (result.nothingMissing) {
+          showToast("Semua komponen launcher sudah lengkap.", "success");
+        } else {
+          showToast(result.message || "Repair selesai.", "success");
+        }
+      } else {
+        showToast((result && result.message) || "Repair gagal.", "error");
+      }
+    } catch (err) {
+      showToast("Terjadi kesalahan saat repair: " + err.message, "error");
+    } finally {
+      await checkRepairStatus(true);
+    }
+  }
+
+  if (repairBtn) {
+    repairBtn.addEventListener("click", handleRepair);
+  }
+
+  if (window.sampLauncher && typeof window.sampLauncher.onRepairProgress === "function") {
+    window.sampLauncher.onRepairProgress(function (data) {
+      if (!data) return;
+
+      if (repairModalProgressFill && typeof data.percent === "number") {
+        repairModalProgressFill.style.width = data.percent + "%";
+      }
+      if (repairModalPercentText && typeof data.percent === "number") {
+        repairModalPercentText.textContent = data.percent + "%";
+      }
+      if (repairModalStatusText && data.label) {
+        repairModalStatusText.textContent = "Mengunduh " + data.label + "...";
+      }
+
+      if (!data.fileId) return;
+      repairFileStates[data.fileId] = data;
+      const row = repairFileList && repairFileList.querySelector('[data-file-id="' + data.fileId + '"]');
+      if (!row) return;
+
+      const iconEl = row.querySelector(".repair-file-row__icon");
+      const statusEl = row.querySelector(".repair-file-row__status");
+      let progressEl = row.querySelector(".repair-file-progress");
+      const fillEl = progressEl && progressEl.querySelector(".repair-file-progress__fill");
+
+      if (data.stage === "downloading") {
+        if (iconEl) { iconEl.className = "repair-file-row__icon repair-file-row__icon--loading"; iconEl.innerHTML = REPAIR_ICON_LOADING; }
+        if (statusEl) { statusEl.className = "repair-file-row__status"; statusEl.textContent = (data.percent || 0) + "%"; }
+        if (!progressEl) {
+          progressEl = document.createElement("div");
+          progressEl.className = "repair-file-progress";
+          progressEl.innerHTML = '<div class="repair-file-progress__fill"></div>';
+          row.insertBefore(progressEl, statusEl);
+        }
+        const pFill = progressEl.querySelector(".repair-file-progress__fill");
+        if (pFill) pFill.style.width = (data.percent || 0) + "%";
+      } else if (data.stage === "done") {
+        if (iconEl) { iconEl.className = "repair-file-row__icon repair-file-row__icon--ok"; iconEl.innerHTML = REPAIR_ICON_OK; }
+        if (statusEl) { statusEl.className = "repair-file-row__status repair-file-row__status--done"; statusEl.textContent = "Dipulihkan"; }
+        if (fillEl) fillEl.style.width = "100%";
+        setTimeout(function () { if (progressEl && progressEl.parentNode) progressEl.remove(); }, 800);
+      } else if (data.stage === "error") {
+        if (iconEl) { iconEl.className = "repair-file-row__icon repair-file-row__icon--missing"; iconEl.innerHTML = REPAIR_ICON_MISSING; }
+        if (statusEl) { statusEl.className = "repair-file-row__status repair-file-row__status--error"; statusEl.textContent = "Gagal"; }
+        if (progressEl && progressEl.parentNode) progressEl.remove();
+      }
+    });
+  }
+
+  let pendingRepairCallback = null;
+
+  function renderRepairModalFileList(items) {
+    if (!repairModalFileList) return;
+    repairModalFileList.innerHTML = "";
+    (items || []).forEach(function (item) {
+      const row = document.createElement("div");
+      row.className = "repair-file-row";
+      row.innerHTML =
+        '<span class="repair-file-row__icon repair-file-row__icon--missing">' + REPAIR_ICON_MISSING + '</span>' +
+        '<span class="repair-file-row__name">' + escapeHtml(item.label) + '</span>' +
+        '<span class="repair-file-row__status repair-file-row__status--missing">Tidak ditemukan</span>';
+      repairModalFileList.appendChild(row);
+    });
+  }
+
+  function openRepairModal(missingItems, onRepairedCallback) {
+    pendingRepairCallback = typeof onRepairedCallback === "function" ? onRepairedCallback : null;
+    renderRepairModalFileList(missingItems);
+
+    if (repairModalProgressWrap) repairModalProgressWrap.style.display = "none";
+    if (repairModalProgressFill) repairModalProgressFill.style.width = "0%";
+    if (repairModalStatusText) repairModalStatusText.textContent = "Mengunduh...";
+    if (repairModalPercentText) repairModalPercentText.textContent = "0%";
+
+    if (repairModalCancelBtn) repairModalCancelBtn.disabled = false;
+    if (repairModalConfirmBtn) {
+      repairModalConfirmBtn.disabled = false;
+      repairModalConfirmBtn.textContent = "Install & Repair";
+    }
+
+    if (repairModalOverlay) repairModalOverlay.classList.add("active");
+  }
+
+  function closeRepairModal() {
+    if (repairModalOverlay) repairModalOverlay.classList.remove("active");
+    pendingRepairCallback = null;
+  }
+
+  async function handleConfirmRepairModal() {
+    if (!window.sampLauncher || !window.sampLauncher.repairLauncher) return;
+
+    if (repairModalCancelBtn) repairModalCancelBtn.disabled = true;
+    if (repairModalConfirmBtn) {
+      repairModalConfirmBtn.disabled = true;
+      repairModalConfirmBtn.textContent = "Mengunduh...";
+    }
+    if (repairModalProgressWrap) repairModalProgressWrap.style.display = "flex";
+    if (repairModalProgressFill) repairModalProgressFill.style.width = "0%";
+
+    try {
+      const result = await window.sampLauncher.repairLauncher();
+      if (result && result.success) {
+        showToast("Komponen launcher berhasil diinstall & diperbaiki!", "success");
+        const cb = pendingRepairCallback;
+        closeRepairModal();
+        if (cb) {
+          cb();
+        }
+      } else {
+        showToast((result && result.message) || "Repair gagal.", "error");
+        if (repairModalCancelBtn) repairModalCancelBtn.disabled = false;
+        if (repairModalConfirmBtn) {
+          repairModalConfirmBtn.disabled = false;
+          repairModalConfirmBtn.textContent = "Coba Lagi";
+        }
+      }
+    } catch (err) {
+      showToast("Terjadi kesalahan saat repair: " + err.message, "error");
+      if (repairModalCancelBtn) repairModalCancelBtn.disabled = false;
+      if (repairModalConfirmBtn) {
+        repairModalConfirmBtn.disabled = false;
+        repairModalConfirmBtn.textContent = "Coba Lagi";
+      }
+    } finally {
+      checkRepairStatus(true);
+    }
+  }
+
+  if (repairModalCancelBtn) {
+    repairModalCancelBtn.addEventListener("click", closeRepairModal);
+  }
+
+  if (repairModalConfirmBtn) {
+    repairModalConfirmBtn.addEventListener("click", handleConfirmRepairModal);
+  }
+
   async function openSettingsModal() {
     clearSettingsError();
     settingsModalOverlay.classList.add("active");
+    checkRepairStatus(true);
 
     try {
       const settings = await window.sampLauncher.getSettings();
@@ -950,7 +1194,6 @@
     try {
       await window.sampLauncher.saveTheme(nextTheme);
     } catch (err) {
-      // gagal simpan preferensi tema bukan hal fatal
     }
   }
 
@@ -998,6 +1241,14 @@
         showToast(result.message || "SA-MP sedang dijalankan...", "success");
         onFinishClose();
         return true;
+      }
+
+      if (result && result.needsRepair) {
+        onFinishClose();
+        openRepairModal(result.missingComponents, function () {
+          performLaunch(playerName, serverPassword, sampVersion, triggerBtn, triggerDefaultText, onFinishClose);
+        });
+        return false;
       }
 
       return { message: result && result.message ? result.message : "Gagal menjalankan SA-MP" };

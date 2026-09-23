@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn, exec } = require("child_process");
@@ -26,6 +26,36 @@ const MOD_ZIP_DEFINITIONS = {
     label: "ModLoader"
   }
 };
+
+const REPAIR_COMPONENT_DEFINITIONS = [
+  {
+    id: "samp_launcher",
+    label: "samp_launcher.exe",
+    url: "https://raw.githubusercontent.com/SA-MP-World/launcher/refs/heads/main/bin/samp_launcher.exe",
+    getDestPath: function () {
+      const base = app.isPackaged ? process.resourcesPath : __dirname;
+      return path.join(base, "bin", "samp_launcher.exe");
+    }
+  },
+  {
+    id: "saworld_client",
+    label: "saworld-client.dll",
+    url: "https://raw.githubusercontent.com/SA-MP-World/launcher/refs/heads/main/bin/client/saworld-client.dll",
+    getDestPath: function () {
+      const base = app.isPackaged ? process.resourcesPath : __dirname;
+      return path.join(base, "bin", "client", "saworld-client.dll");
+    }
+  },
+  {
+    id: "file_detect",
+    label: "FileDetect.asi",
+    url: "https://raw.githubusercontent.com/SA-MP-World/launcher/refs/heads/main/bin/AC/FileDetect.asi",
+    getDestPath: function () {
+      const base = app.isPackaged ? process.resourcesPath : __dirname;
+      return path.join(base, "bin", "AC", "FileDetect.asi");
+    }
+  }
+];
 
 app.setName("SAMP World");
 
@@ -261,17 +291,15 @@ async function queryServerPlayersDetailed(host, port) {
 
   const players = [];
   for (let i = 0; i < playerCount; i++) {
-    // butuh minimal 1 byte id + 1 byte panjang nama
     if (offset + 2 > body.length) {
       break;
     }
 
-    offset += 1; // player id byte, tidak dipakai di UI
+    offset += 1;
 
     const nameLen = body.readUInt8(offset);
     offset += 1;
 
-    // pastikan sisa buffer cukup untuk nama + score (4) + ping (4)
     if (offset + nameLen + 8 > body.length) {
       break;
     }
@@ -307,7 +335,6 @@ async function queryServerPlayersShort(host, port) {
 
   const players = [];
   for (let i = 0; i < playerCount; i++) {
-    // butuh minimal 1 byte panjang nama
     if (offset + 1 > body.length) {
       break;
     }
@@ -315,7 +342,6 @@ async function queryServerPlayersShort(host, port) {
     const nameLen = body.readUInt8(offset);
     offset += 1;
 
-    // pastikan sisa buffer cukup untuk nama + score (4 byte)
     if (offset + nameLen + 4 > body.length) {
       break;
     }
@@ -345,8 +371,6 @@ async function fetchServerPlayers(host, port) {
     return { connected: false, players: [] };
   }
 
-  // pakai hasil yang paling banyak berhasil di-parse; 'd' punya score/ping jadi
-  // diprioritaskan bila jumlahnya sama atau lebih lengkap dibanding 'c'.
   if (detailedCount >= shortCount) {
     return { connected: true, players: detailed, detailed: true };
   }
@@ -515,7 +539,7 @@ let discordLastError = "";
 let activityStartTimestamp = null;
 let discordRetryTimer = null;
 
-let activeSession = null; // { host, port, playerName }
+let activeSession = null;
 let activityRefreshTimer = null;
 let hasSeenPlayerOnline = false;
 let sessionJoinedAt = null;
@@ -699,8 +723,8 @@ function clearDiscordActivity() {
 }
 
 const GTA_PROCESS_NAME = "gta_sa.exe";
-const GTA_MONITOR_GRACE_PERIOD_MS = 20000;
-const GTA_MONITOR_POLL_INTERVAL_MS = 8000;
+const GTA_MONITOR_GRACE_PERIOD_MS = 3000;
+const GTA_MONITOR_POLL_INTERVAL_MS = 2000;
 
 function isGtaProcessRunning(callback) {
   if (process.platform !== "win32") {
@@ -744,6 +768,15 @@ function monitorGtaProcessForDiscord() {
           console.log(GTA_PROCESS_NAME + " sudah tidak berjalan, menghapus Discord Rich Presence.");
           clearInterval(pollTimer);
           clearDiscordActivity();
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) {
+              mainWindow.restore();
+            }
+            mainWindow.show();
+            mainWindow.focus();
+            setTimeout(enforceWindowResolution, 300);
+            setTimeout(enforceWindowResolution, 1000);
+          }
         }
       });
     }, GTA_MONITOR_POLL_INTERVAL_MS);
@@ -1211,6 +1244,20 @@ function setSampPlayerNameRegistry(playerName) {
   });
 }
 
+function enforceWindowResolution() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const [currentW, currentH] = mainWindow.getSize();
+  if (currentW !== 1280 || currentH !== 760) {
+    mainWindow.setContentSize(1280, 760);
+    mainWindow.setSize(1280, 760);
+    mainWindow.center();
+  }
+  if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.setZoomLevel(0);
+    mainWindow.webContents.setZoomFactor(1.0);
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -1237,6 +1284,21 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+
+  mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
+  mainWindow.webContents.on("zoom-changed", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.setZoomLevel(0);
+    }
+  });
+
+  mainWindow.on("focus", () => {
+    enforceWindowResolution();
+  });
+
+  mainWindow.on("restore", () => {
+    enforceWindowResolution();
+  });
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
@@ -1282,6 +1344,11 @@ app.whenReady().then(() => {
   createWindow();
   initDiscordRpc();
   initSessionTracker();
+
+  screen.on("display-metrics-changed", () => {
+    setTimeout(enforceWindowResolution, 300);
+    setTimeout(enforceWindowResolution, 1000);
+  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1446,17 +1513,19 @@ ipcMain.handle("launch-samp", async (event, payload) => {
     };
   }
 
+  const missingComps = REPAIR_COMPONENT_DEFINITIONS.filter((c) => !fs.existsSync(c.getDestPath()));
+  if (missingComps.length > 0) {
+    writeLog("WARN", "Komponen launcher tidak lengkap: " + missingComps.map((c) => c.label).join(", "));
+    return {
+      success: false,
+      needsRepair: true,
+      missingComponents: missingComps.map((c) => ({ id: c.id, label: c.label }))
+    };
+  }
+
   const launcherPath = app.isPackaged
     ? path.join(process.resourcesPath, "bin", "samp_launcher.exe")
     : path.join(__dirname, "bin", "samp_launcher.exe");
-
-  if (!fs.existsSync(launcherPath)) {
-    writeLog("ERROR", "samp_launcher.exe tidak ditemukan di: " + launcherPath);
-    return {
-      success: false,
-      message: "samp_launcher.exe tidak ditemukan. Coba install ulang aplikasi."
-    };
-  }
 
   const sharedResult = ensureSharedFilesInstalled(gtaSaDirectory);
   if (!sharedResult.success) {
@@ -1679,7 +1748,6 @@ ipcMain.handle("download-cleo", async () => {
     try {
       fs.unlinkSync(tempRarPath);
     } catch (err) {
-      // gagal hapus file sementara bukan hal fatal
     }
 
     if (!isCleoInstalled(gtaSaDirectory)) {
@@ -1700,7 +1768,6 @@ ipcMain.handle("download-cleo", async () => {
         fs.unlinkSync(tempRarPath);
       }
     } catch (cleanupErr) {
-      // abaikan gagal cleanup
     }
 
     writeLog("ERROR", "Gagal mendownload/install CLEO 4: " + err.message);
@@ -1807,3 +1874,58 @@ ipcMain.handle("open-chatlog-folder", async () => {
     return { success: false, message: "Gagal membuka folder: " + err.message };
   }
 });
+
+ipcMain.handle("check-repair", async () => {
+  return REPAIR_COMPONENT_DEFINITIONS.map((f) => ({
+    id: f.id,
+    label: f.label,
+    missing: !fs.existsSync(f.getDestPath()),
+    destPath: f.getDestPath()
+  }));
+});
+
+ipcMain.handle("repair-launcher", async (event, payload) => {
+  const force = payload && payload.force;
+  const toRepair = force
+    ? REPAIR_COMPONENT_DEFINITIONS
+    : REPAIR_COMPONENT_DEFINITIONS.filter((f) => !fs.existsSync(f.getDestPath()));
+
+  if (toRepair.length === 0) {
+    return { success: true, nothingMissing: true, message: "Semua komponen launcher sudah lengkap." };
+  }
+
+  function sendRepairProgress(payload) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("repair-progress", payload);
+    }
+  }
+
+  for (const file of toRepair) {
+    const destPath = file.getDestPath();
+    writeLog("INFO", "Repair: Memulai unduh " + file.label + " dari " + file.url);
+    sendRepairProgress({ stage: "downloading", fileId: file.id, label: file.label, percent: 0, downloadedBytes: 0, totalBytes: 0 });
+
+    try {
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+      await downloadFileWithProgress(file.url, destPath, (downloadedBytes, totalBytes) => {
+        const percent = totalBytes > 0 ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : 0;
+        sendRepairProgress({ stage: "downloading", fileId: file.id, label: file.label, percent, downloadedBytes, totalBytes });
+      });
+
+      writeLog("INFO", "Repair: " + file.label + " berhasil dipulihkan ke " + destPath);
+      sendRepairProgress({ stage: "done", fileId: file.id, label: file.label, percent: 100 });
+    } catch (err) {
+      writeLog("ERROR", "Repair: Gagal mengunduh " + file.label + ": " + err.message);
+      sendRepairProgress({ stage: "error", fileId: file.id, label: file.label, message: err.message });
+
+      try {
+        if (fs.existsSync(destPath)) { fs.unlinkSync(destPath); }
+      } catch (cleanupErr) { }
+
+      return { success: false, message: "Gagal memulihkan " + file.label + ": " + err.message };
+    }
+  }
+
+  return { success: true, message: "Repair selesai. Semua komponen berhasil dipulihkan." };
+});
